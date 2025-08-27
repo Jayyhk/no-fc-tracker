@@ -2,10 +2,9 @@
 
 This is a Google Apps Script that tracks all osu!standard beatmaps without a Full Combo (FC). It automatically fetches beatmap data and manages a database of unFC'd maps. The public sheet that displays the results can be found [here](https://docs.google.com/spreadsheets/d/1zaTkQJug5aPn-39Zk6vjhZsRs-cF8dPgfixILvXV6xs/edit?usp=sharing).
 
-> [!NOTE]
-> **osu!stable only** - this does not track osu!lazer scores.
+> [!NOTE] > **osu!stable only** - this does not track osu!lazer scores.
 >
-> **Allowed mods:** NM, NF, EZ, TD, HD, HR, SD, DT, HT, NC, FL, SO, PF
+> **Allowed mods:** NM, NF, HD, HR, SD, DT, NC, FL, PF
 >
 > **Forbidden mods:** EZ, TD, HT, SO
 
