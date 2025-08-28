@@ -118,6 +118,30 @@ function calculateDaysRanked(approvedDate) {
 }
 
 /**
+ * Calculates days between ranked date and score date (for history records)
+ * @param {string} rankedDate - Ranked date in MM/DD/YYYY format
+ * @param {string} scoreDate - Score date in MM/DD/YYYY format
+ * @returns {number} Number of days from ranked to FC
+ */
+function calculateDaysToFC(rankedDate, scoreDate) {
+  try {
+    const ranked = new Date(rankedDate);
+    const score = new Date(scoreDate);
+
+    if (isNaN(ranked.getTime()) || isNaN(score.getTime())) {
+      return 0;
+    }
+
+    const timeDifference = Math.abs(score - ranked);
+    const daysDifference = Math.ceil(timeDifference / (1000 * 60 * 60 * 24));
+    return daysDifference;
+  } catch (error) {
+    console.log("Error calculating days to FC:", error.message);
+    return 0;
+  }
+}
+
+/**
  * Converts mod enum to string representation
  * @param {number} modsEnum - Bitwise mod flags
  * @returns {string} String representation of mods (e.g., "HDHR", "DT", "NM")
@@ -500,6 +524,10 @@ function moveRowToHistory(rowNumber) {
   const dataToMove = formulas.map((formula, index) => {
     return formula || values[index];
   });
+
+  const rankedDate = dataToMove[12]; // Column M (ranked date)
+  const scoreDate = dataToMove[15]; // Column P (score date)
+  dataToMove[13] = calculateDaysToFC(rankedDate, scoreDate); // Column N (days to FC)
 
   const historyLastRow = HISTORY_SHEET.getLastRow();
   const targetRow = historyLastRow + 1;
