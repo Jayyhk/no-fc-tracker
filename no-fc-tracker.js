@@ -26,6 +26,16 @@ const ALLOWED_MODS = {
   },
   FORBIDDEN: 2 | 4 | 256 | 4096, // EZ | TD | HT | SO
 };
+const RANK_VALUE_MAP = new Map([
+  ["D", 1],
+  ["C", 2],
+  ["B", 3],
+  ["A", 4],
+  ["S", 5],
+  ["SH", 5],
+  ["X", 6],
+  ["XH", 6],
+]);
 const OSU_API_KEY = (() => {
   try {
     const scriptProperties = PropertiesService.getScriptProperties();
@@ -37,7 +47,7 @@ const OSU_API_KEY = (() => {
   } catch (error) {
     console.error("Error getting API key:", error.message);
     throw new Error(
-      "Please set OSU_API_KEY in Google Apps Script Project Settings > Script Properties"
+      "Please set OSU_API_KEY in Google Apps Script Project Settings -> Script Properties"
     );
   }
 })();
@@ -262,17 +272,23 @@ function refreshAllBeatmaps() {
   const lastRow = DATA_SHEET.getLastRow();
   const rowCount = lastRow - OUTPUT_ROW_NUM + 1;
 
-  const raws = DATA_SHEET.getRange(OUTPUT_ROW_NUM, INPUT_COL_NUM, rowCount, 1)
-    .getValues()
-    .flat()
-    .map(String);
+  const beatmapIdRegex = /\d+$/;
 
-  const jobs = raws
-    .map((u, i) => {
-      const m = u.match(/\d+$/);
-      return m ? { row: OUTPUT_ROW_NUM + i, id: m[0] } : null;
-    })
-    .filter((x) => x);
+  const rawValues = DATA_SHEET.getRange(
+    OUTPUT_ROW_NUM,
+    INPUT_COL_NUM,
+    rowCount,
+    1
+  ).getValues();
+  const jobs = [];
+
+  for (let i = 0; i < rawValues.length; i++) {
+    const url = String(rawValues[i][0]);
+    const match = url.match(beatmapIdRegex);
+    if (match) {
+      jobs.push({ row: OUTPUT_ROW_NUM + i, id: match[0] });
+    }
+  }
 
   if (jobs.length === 0) {
     showMessage("No valid beatmap IDs found to refresh.");
@@ -606,17 +622,29 @@ function processBeatmapJobs(jobs) {
   const allInputUrls = [];
   const rowNumbers = [];
 
+  const beatmapApiTemplate = `https://osu.ppy.sh/api/get_beatmaps?k=${OSU_API_KEY}&b=`;
+  const scoresApiTemplate = `https://osu.ppy.sh/api/get_scores?k=${OSU_API_KEY}&b=`;
+
   for (let offset = 0; offset < jobs.length; offset += BATCH_SIZE) {
     const batch = jobs.slice(offset, offset + BATCH_SIZE);
 
-    const bmCalls = batch
-      .filter((job) => !job.beatmapData)
-      .map((job) => ({
-        url: `https://osu.ppy.sh/api/get_beatmaps?k=${OSU_API_KEY}&b=${job.id}`,
-      }));
+    const jobsNeedingBeatmapData = [];
+    const jobsWithBeatmapData = [];
+
+    for (const job of batch) {
+      if (job.beatmapData) {
+        jobsWithBeatmapData.push(job);
+      } else {
+        jobsNeedingBeatmapData.push(job);
+      }
+    }
+
+    const bmCalls = jobsNeedingBeatmapData.map((job) => ({
+      url: beatmapApiTemplate + job.id,
+    }));
 
     const scCalls = batch.map((job) => ({
-      url: `https://osu.ppy.sh/api/get_scores?k=${OSU_API_KEY}&b=${job.id}`,
+      url: scoresApiTemplate + job.id,
     }));
 
     const bmRes = bmCalls.length > 0 ? UrlFetchApp.fetchAll(bmCalls) : [];
@@ -848,14 +876,12 @@ function fetchBeatmapData(beatmapID) {
  * @returns {Object} Best score data with highest combo and best rank, including percentFC
  */
 function findBestScore(scores, maxCombo) {
-  let bestScore = {
-    userID: 0,
-    player: "",
-    modString: "",
-    currentMaxCombo: 0,
-    rank: "",
-    scoreDate: "",
-  };
+  let bestUserID = 0;
+  let bestUsername = "";
+  let bestModString = "";
+  let bestCombo = 0;
+  let bestRank = "";
+  let bestDate = "";
 
   const scoreLimit = Math.min(scores.length, 50);
 
@@ -865,42 +891,44 @@ function findBestScore(scores, maxCombo) {
     const modsEnum = parseInt(score.enabled_mods);
 
     if (isModAllowed(modsEnum)) {
-      // Check for FC first - if found, use this score and exit immediately
       if (isFC(score, maxCombo)) {
-        bestScore = {
-          userID: parseInt(score.user_id),
-          player: createPlayerHyperlink(score.user_id, score.username),
-          modString: getModString(modsEnum),
-          currentMaxCombo: combo,
-          rank: score.rank,
-          scoreDate: formatDate(score.date),
-        };
+        bestUserID = parseInt(score.user_id);
+        bestUsername = score.username;
+        bestModString = getModString(modsEnum);
+        bestCombo = combo;
+        bestRank = score.rank;
+        bestDate = score.date;
         break;
       }
 
       const currentRankValue = getRankValue(score.rank);
-      const bestRankValue = getRankValue(bestScore.rank);
+      const bestRankValue = getRankValue(bestRank);
 
       // Update if: higher combo, or same combo but better rank
       if (
-        combo > bestScore.currentMaxCombo ||
-        (combo === bestScore.currentMaxCombo &&
-          currentRankValue > bestRankValue)
+        combo > bestCombo ||
+        (combo === bestCombo && currentRankValue > bestRankValue)
       ) {
-        bestScore = {
-          userID: parseInt(score.user_id),
-          player: createPlayerHyperlink(score.user_id, score.username),
-          modString: getModString(modsEnum),
-          currentMaxCombo: combo,
-          rank: score.rank,
-          scoreDate: formatDate(score.date),
-        };
+        bestUserID = parseInt(score.user_id);
+        bestUsername = score.username;
+        bestModString = getModString(modsEnum);
+        bestCombo = combo;
+        bestRank = score.rank;
+        bestDate = score.date;
       }
     }
   }
 
-  const percentFC = (bestScore.currentMaxCombo / maxCombo) * 100;
-  return { ...bestScore, percentFC };
+  const percentFC = (bestCombo / maxCombo) * 100;
+  return {
+    userID: bestUserID,
+    player: bestUserID ? createPlayerHyperlink(bestUserID, bestUsername) : "",
+    modString: bestModString,
+    currentMaxCombo: bestCombo,
+    rank: bestRank,
+    scoreDate: bestDate ? formatDate(bestDate) : "",
+    percentFC: percentFC,
+  };
 }
 
 /**
@@ -932,17 +960,7 @@ function getExistingBeatmapIds() {
  * @returns {number} Numeric value for comparison (higher = better)
  */
 function getRankValue(rank) {
-  const rankValues = {
-    D: 1,
-    C: 2,
-    B: 3,
-    A: 4,
-    S: 5,
-    SH: 5, // Same as S - hidden doesn't change rank value
-    X: 6,
-    XH: 6, // Same as X - hidden doesn't change rank value
-  };
-  return rankValues[rank] || 0;
+  return RANK_VALUE_MAP.get(rank) || 0;
 }
 
 /**
