@@ -62,6 +62,7 @@ function letterToColumn(letter) {
   for (let i = 0; i < letter.length; i++) {
     columnNumber = columnNumber * 26 + (letter.charCodeAt(i) - 64);
   }
+
   return columnNumber;
 }
 
@@ -94,7 +95,6 @@ function showMessage(message) {
 function formatDate(dateInput) {
   const date =
     typeof dateInput === "string" ? new Date(dateInput + " UTC") : dateInput;
-
   const isUTC = typeof dateInput === "string";
   const month = isUTC ? date.getUTCMonth() + 1 : date.getMonth() + 1;
   const day = isUTC ? date.getUTCDate() : date.getDate();
@@ -111,33 +111,36 @@ function formatDate(dateInput) {
 function formatLength(totalSeconds) {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
+
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
 /**
  * Calculates days since beatmap was ranked
- * @param {string} approvedDate - Date in YYYY-MM-DD HH:MM:SS format
+ * @param {string} approvedDateString - Date in YYYY-MM-DD HH:MM:SS format
  * @returns {number} Number of days since ranked
  */
-function calculateDaysRanked(approvedDate) {
-  const date = new Date(approvedDate + " UTC");
+function calculateDaysRanked(approvedDateString) {
+  const approvedDate = new Date(approvedDateString + " UTC");
   const now = new Date();
-  const timeDifference = Math.abs(now - date);
+  const timeDifference = Math.abs(now - approvedDate);
   const daysDifference = Math.ceil(timeDifference / (1000 * 60 * 60 * 24));
+
   return daysDifference;
 }
 
 /**
  * Calculates days between ranked date and score date (for history records)
- * @param {string} rankedDate - Ranked date in MM/DD/YYYY format
- * @param {string} scoreDate - Score date in MM/DD/YYYY format
+ * @param {string} rankedDateString - Ranked date in MM/DD/YYYY format
+ * @param {string} scoreDateString - Score date in MM/DD/YYYY format
  * @returns {number} Number of days from ranked to FC
  */
-function calculateDaysToFC(rankedDate, scoreDate) {
-  const ranked = new Date(rankedDate);
-  const score = new Date(scoreDate);
-  const timeDifference = Math.abs(score - ranked);
+function calculateDaysToFC(rankedDateString, scoreDateString) {
+  const rankedDate = new Date(rankedDateString);
+  const scoreDate = new Date(scoreDateString);
+  const timeDifference = Math.abs(scoreDate - rankedDate);
   const daysDifference = Math.ceil(timeDifference / (1000 * 60 * 60 * 24));
+
   return daysDifference;
 }
 
@@ -148,14 +151,13 @@ function calculateDaysToFC(rankedDate, scoreDate) {
  */
 function getModString(modsEnum) {
   if (modsEnum === 0) return "NM";
-
+  if (modsEnum & 512) modsEnum &= ~64; // If NC present, drop DT bit (512 = NC, 64 = DT)
+  if (modsEnum & 16384) modsEnum &= ~32; // If PF present, drop SD bit (16384 = PF, 32 = SD)
   let modString = "";
-
   const modFlags = Object.keys(ALLOWED_MODS.ALL_MODS)
     .map(Number)
     .filter((flag) => flag > 0)
     .sort((a, b) => a - b);
-
   for (const modFlag of modFlags) {
     if (modsEnum & modFlag) {
       modString += ALLOWED_MODS.ALL_MODS[modFlag];
@@ -187,21 +189,18 @@ function onOpen() {
  */
 function setupDailyTrigger() {
   removeDailyTrigger();
-
   ScriptApp.newTrigger("refreshAllBeatmaps")
     .timeBased()
     .everyDays(1)
     .atHour(23) // 11:00 PM
     .inTimezone("America/New_York") // EST/EDT timezone
     .create();
-
   ScriptApp.newTrigger("addNewRankedBeatmaps")
     .timeBased()
     .everyDays(1)
     .atHour(0) // 12:00 AM
     .inTimezone("America/New_York") // EST/EDT timezone
     .create();
-
   showMessage(
     "Daily auto-refresh has been set up with two triggers:\n\n" +
       "• 11:00 PM EST/EDT: Refresh existing beatmaps\n" +
@@ -215,7 +214,6 @@ function setupDailyTrigger() {
 function removeDailyTrigger() {
   const triggers = ScriptApp.getProjectTriggers();
   let removedCount = 0;
-
   triggers.forEach((trigger) => {
     const handlerFunction = trigger.getHandlerFunction();
     if (
@@ -226,7 +224,6 @@ function removeDailyTrigger() {
       removedCount++;
     }
   });
-
   showMessage(`Removed ${removedCount} daily auto-refresh trigger(s).`);
 }
 
@@ -237,7 +234,6 @@ function removeDailyTrigger() {
 function setBeatmapDataOnEdit(e) {
   const range = e.range;
   const sheet = range.getSheet();
-
   if (
     sheet.getName() !== DATA_SHEET.getName() ||
     range.getColumn() !== INPUT_COL_NUM ||
@@ -247,48 +243,46 @@ function setBeatmapDataOnEdit(e) {
   }
 
   const firstRow = range.getRow();
-  for (let i = 0; i < range.getNumRows(); i++) {
-    updateSpreadsheetRow(firstRow + i);
-  }
+  const lastRow = firstRow + range.getNumRows() - 1;
 
+  // Process from bottom to top to avoid row shifting issues when deleting rows
+  for (let r = lastRow; r >= firstRow; r--) {
+    updateSpreadsheetRow(r);
+  }
   sortBeatmapData();
 }
 
 /**
- * Bulk-refreshes all beatmaps in column V by processing in 15-map chunks with 3-second pauses.
+ * Bulk-refreshes all beatmaps by reading beatmap IDs directly from column K.
+ * Processes in 15-map chunks with 3-second pauses between batches.
  * Also moves any FCs to History and updates the timestamp. Called by menu or trigger.
  */
 function refreshAllBeatmaps() {
   const lastRow = DATA_SHEET.getLastRow();
   const rowCount = lastRow - OUTPUT_ROW_NUM + 1;
-
-  const beatmapIdRegex = /\d+$/;
-
-  const rawValues = DATA_SHEET.getRange(
+  const beatmapIDs = DATA_SHEET.getRange(
     OUTPUT_ROW_NUM,
-    INPUT_COL_NUM,
+    OUTPUT_COL_NUM + 10, // Column K
     rowCount,
     1
   ).getValues();
+
   const jobs = [];
-
-  for (let i = 0; i < rawValues.length; i++) {
-    const url = String(rawValues[i][0]);
-    const match = url.match(beatmapIdRegex);
-    if (match) {
-      jobs.push({ row: OUTPUT_ROW_NUM + i, id: match[0] });
+  for (let i = 0; i < beatmapIDs.length; i++) {
+    const beatmapID = String(beatmapIDs[i][0]);
+    if (
+      beatmapID &&
+      beatmapID !== "" &&
+      beatmapID !== "undefined" &&
+      beatmapID !== "null"
+    ) {
+      jobs.push({ row: OUTPUT_ROW_NUM + i, id: beatmapID });
     }
-  }
-
-  if (jobs.length === 0) {
-    showMessage("No valid beatmap IDs found to refresh.");
-    return;
   }
 
   processBeatmapJobs(jobs);
   moveFCsToHistory();
   updateLastUpdatedTimestamp();
-
   showMessage(`Refresh complete! Updated ${jobs.length} beatmap(s).`);
 }
 
@@ -309,7 +303,6 @@ function addNewRankedBeatmaps() {
     showMessage("Error fetching new ranked beatmaps: " + error.message);
     return;
   }
-
   if (!beatmaps || beatmaps.length === 0) {
     showMessage("No new ranked beatmaps found in the past day.");
     return;
@@ -322,12 +315,10 @@ function addNewRankedBeatmaps() {
     );
     return;
   }
-
   const existingBeatmapIds = getExistingBeatmapIds();
   const newBeatmaps = rankedBeatmaps.filter(
     (beatmap) => !existingBeatmapIds.includes(beatmap.beatmap_id)
   );
-
   if (newBeatmaps.length === 0) {
     showMessage("All newly ranked beatmaps are already in the spreadsheet.");
     return;
@@ -335,21 +326,18 @@ function addNewRankedBeatmaps() {
 
   const lastRow = DATA_SHEET.getLastRow();
   let nextRow = Math.max(lastRow + 1, OUTPUT_ROW_NUM);
-
   const jobs = [];
   const skippedBeatmapIDs = [];
   let addedCount = 0;
 
   for (let i = 0; i < newBeatmaps.length; i++) {
     const beatmap = newBeatmaps[i];
-
     let scores = [];
     try {
       scores = JSON.parse(fetchFromAPI(beatmap.beatmap_id, "scores")) || [];
     } catch (error) {
       console.log("Could not fetch scores for beatmap " + beatmap.beatmap_id);
     }
-
     const maxCombo = parseInt(beatmap.max_combo);
     const hasFC = scores.some((score) => isFC(score, maxCombo));
 
@@ -369,7 +357,6 @@ function addNewRankedBeatmaps() {
       });
     }
   }
-
   if (jobs.length === 0) {
     showMessage("All newly ranked beatmaps already have FCs.");
     return;
@@ -410,7 +397,6 @@ function moveFCsToHistory() {
   const lastRow = DATA_SHEET.getLastRow();
   const beatmapsToMoveToHistory = [];
   const beatmapsToDelete = [];
-
   const rowCount = lastRow - OUTPUT_ROW_NUM + 1;
   const allData = DATA_SHEET.getRange(
     OUTPUT_ROW_NUM,
@@ -422,7 +408,6 @@ function moveFCsToHistory() {
   for (let i = 0; i < allData.length; i++) {
     const rowData = allData[i];
     const row = OUTPUT_ROW_NUM + i;
-
     if (
       rowData.every(
         (cell) => cell === "" || cell === null || cell === undefined
@@ -436,7 +421,6 @@ function moveFCsToHistory() {
     const rank = rowData[16]; // Column Q (rank)
     const currentMaxCombo = parseInt(rowData[18]); // Column S (current max combo)
     const maxCombo = parseInt(rowData[19]); // Column T (max combo)
-
     if (isNaN(daysRanked) || isNaN(currentMaxCombo) || isNaN(maxCombo))
       continue;
 
@@ -450,25 +434,24 @@ function moveFCsToHistory() {
     const hasFC = isFC(mockScore, maxCombo);
 
     if (hasFC) {
-      const beatmapsetId = rowData[11]; // Column L (beatmapset ID)
-      const beatmapId = rowData[10]; // Column K (beatmap ID)
-
+      const beatmapsetID = rowData[11]; // Column L (beatmapset ID)
+      const beatmapID = rowData[10]; // Column K (beatmap ID)
       if (daysRanked >= 30) {
         if (scoreDate && scoreDate !== "" && scoreDate !== null) {
           const parsedScoreDate = new Date(scoreDate);
           if (!isNaN(parsedScoreDate.getTime())) {
             beatmapsToMoveToHistory.push({
               row: row,
-              beatmapsetID: beatmapsetId,
-              beatmapID: beatmapId,
+              beatmapsetID: beatmapsetID,
+              beatmapID: beatmapID,
             });
           }
         }
       } else {
         beatmapsToDelete.push({
           row: row,
-          beatmapsetID: beatmapsetId,
-          beatmapID: beatmapId,
+          beatmapsetID: beatmapsetID,
+          beatmapID: beatmapID,
         });
       }
     }
@@ -482,7 +465,6 @@ function moveFCsToHistory() {
     ...beatmapsToMoveToHistory.map((item) => ({ ...item, action: "move" })),
     ...beatmapsToDelete.map((item) => ({ ...item, action: "delete" })),
   ].sort((a, b) => b.row - a.row);
-
   let movedCount = 0;
   let deletedCount = 0;
 
@@ -494,10 +476,6 @@ function moveFCsToHistory() {
       DATA_SHEET.deleteRow(item.row);
       deletedCount++;
     }
-  }
-
-  if (movedCount > 0) {
-    sortHistory();
   }
 
   let movedMessage = `Moved ${movedCount} beatmap(s) with FCs to History sheet (30+ days old).`;
@@ -532,14 +510,12 @@ function moveRowToHistory(rowNumber) {
     showMessage(`Error: Row ${rowNumber} is not a valid number.`);
     return false;
   }
-
   if (rowNumber < OUTPUT_ROW_NUM) {
     showMessage(
       `Error: Row ${rowNumber} is not a valid data row. Data starts at row ${OUTPUT_ROW_NUM}.`
     );
     return false;
   }
-
   if (rowNumber > lastRow) {
     showMessage(
       `Error: Row ${rowNumber} does not exist. Last row is ${lastRow}.`
@@ -547,15 +523,7 @@ function moveRowToHistory(rowNumber) {
     return false;
   }
 
-  const rowData = DATA_SHEET.getRange(
-    rowNumber,
-    OUTPUT_COL_NUM,
-    1,
-    NUM_OUTPUT_COLS
-  ).getValues()[0];
-
-  const columnsToMove = NUM_OUTPUT_COLS - 1;
-
+  const columnsToMove = NUM_OUTPUT_COLS - 1; // Exclude percent FC column (column U)
   const formulas = DATA_SHEET.getRange(
     rowNumber,
     OUTPUT_COL_NUM,
@@ -568,11 +536,9 @@ function moveRowToHistory(rowNumber) {
     1,
     columnsToMove
   ).getValues()[0];
-
   const dataToMove = formulas.map((formula, index) => {
     return formula || values[index];
   });
-
   const rankedDate = dataToMove[12]; // Column M (ranked date)
   const scoreDate = dataToMove[15]; // Column P (score date)
   dataToMove[13] = calculateDaysToFC(rankedDate, scoreDate); // Column N (days to FC)
@@ -585,7 +551,7 @@ function moveRowToHistory(rowNumber) {
   applyHistoryRowFormatting(targetRow);
   DATA_SHEET.deleteRow(rowNumber);
   sortHistory();
-  
+
   return true;
 }
 
@@ -594,20 +560,17 @@ function moveRowToHistory(rowNumber) {
  */
 function moveRowToHistoryManual() {
   const ui = SpreadsheetApp.getUi();
-
   const response = ui.prompt(
     "Move Row to History",
     "Enter the row number to move to History sheet:",
     ui.ButtonSet.OK_CANCEL
   );
-
   if (response.getSelectedButton() !== ui.Button.OK) {
     return;
   }
 
   const inputText = response.getResponseText().trim();
   const rowNumber = parseInt(inputText);
-
   const success = moveRowToHistory(rowNumber);
   if (success) {
     showMessage(`Successfully moved row ${rowNumber} to History sheet.`);
@@ -621,7 +584,6 @@ function updateLastUpdatedTimestamp() {
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
   const yesterdayString = formatDate(yesterday);
-
   const mergedRange = ABOUT_SHEET.getRange(LAST_UPDATED_RANGE);
   mergedRange.setValue(`Last Updated: ${yesterdayString}`);
 }
@@ -633,43 +595,39 @@ function updateLastUpdatedTimestamp() {
 function processBeatmapJobs(jobs) {
   const BATCH_SIZE = 15;
   const PAUSE_MS = 3000;
-
-  // Collect all processed data for bulk operations
   const allRowData = [];
   const allInputURLs = [];
   const rowNumbers = [];
-
   const beatmapApiTemplate = `https://osu.ppy.sh/api/get_beatmaps?k=${OSU_API_KEY}&b=`;
   const scoresApiTemplate = `https://osu.ppy.sh/api/get_scores?k=${OSU_API_KEY}&b=`;
 
   for (let offset = 0; offset < jobs.length; offset += BATCH_SIZE) {
     const batch = jobs.slice(offset, offset + BATCH_SIZE);
-
-    const jobsNeedingBeatmapData = [];
-    const jobsWithBeatmapData = [];
-
-    for (const job of batch) {
-      if (job.beatmapData) {
-        jobsWithBeatmapData.push(job);
-      } else {
-        jobsNeedingBeatmapData.push(job);
-      }
-    }
-
-    const bmCalls = jobsNeedingBeatmapData.map((job) => ({
-      url: beatmapApiTemplate + job.id,
-    }));
-
-    const scCalls = batch.map((job) => ({
-      url: scoresApiTemplate + job.id,
-    }));
-
+    // Create beatmap API calls only for jobs that don't have beatmap data
+    const bmCalls = batch
+      .filter((job) => !job.beatmapData)
+      .map((job) => ({
+        url: beatmapApiTemplate + job.id,
+      }));
+    // Create score API calls only for jobs that don't have scores
+    const scCalls = batch
+      .filter((job) => !job.scores)
+      .map((job) => ({
+        url: scoresApiTemplate + job.id,
+      }));
     const bmRes = bmCalls.length > 0 ? UrlFetchApp.fetchAll(bmCalls) : [];
-    const scRes = UrlFetchApp.fetchAll(scCalls);
+    const scRes = scCalls.length > 0 ? UrlFetchApp.fetchAll(scCalls) : [];
 
     let bmIndex = 0;
-    batch.forEach((job, i) => {
-      const result = processBeatmapJobForBulk(job, bmRes, scRes, bmIndex, i);
+    let scIndex = 0;
+    batch.forEach((job) => {
+      const result = processBeatmapJobForBulk(
+        job,
+        bmRes,
+        scRes,
+        bmIndex,
+        scIndex
+      );
       if (result) {
         allRowData.push(result.rowData);
         rowNumbers.push(job.row);
@@ -677,63 +635,18 @@ function processBeatmapJobs(jobs) {
           allInputURLs.push({ row: job.row, url: result.inputURL });
         }
       }
+      // Increment indices only for jobs that made API calls
       if (!job.beatmapData) bmIndex++;
+      if (!job.scores) scIndex++;
     });
-
     Utilities.sleep(PAUSE_MS);
   }
 
-  // Bulk write all collected data
   if (allRowData.length > 0) {
     setBulkRowData(rowNumbers, allRowData);
   }
-
-  // Bulk set input URLs
   if (allInputURLs.length > 0) {
     setBulkInputURLs(allInputURLs);
-  }
-}
-
-/**
- * Processes a single beatmap job: fetches data, creates row, and optionally adds beatmap URL
- * @param {Object} job - Job object with {row, id, beatmapData?, scores?, addInputURL?}
- * @param {Array} bmRes - Beatmap API responses
- * @param {Array} scRes - Scores API responses
- * @param {number} bmIndex - Index for beatmap response
- * @param {number} scIndex - Index for scores response
- */
-function processSingleBeatmapJob(job, bmRes, scRes, bmIndex, scIndex) {
-  let beatmapData = job.beatmapData;
-  let scores = job.scores || [];
-
-  if (!beatmapData) {
-    try {
-      beatmapData = JSON.parse(bmRes[bmIndex].getContentText("UTF-8"))[0];
-    } catch (e) {
-      setRowData(job.row, createErrorRow());
-      return;
-    }
-
-    if (!beatmapData) {
-      setRowData(job.row, createErrorRow("Invalid beatmap ID"));
-      return;
-    }
-  }
-
-  if (!job.scores) {
-    try {
-      scores = JSON.parse(scRes[scIndex].getContentText("UTF-8")) || [];
-    } catch (error) {
-      console.log("Could not fetch scores for beatmap " + job.id);
-    }
-  }
-
-  const rowData = createBeatmapRow(beatmapData, scores);
-  setRowData(job.row, [rowData]);
-
-  if (job.addInputURL && beatmapData) {
-    const beatmapURL = `https://osu.ppy.sh/beatmapsets/${beatmapData.beatmapset_id}#osu/${beatmapData.beatmap_id}`;
-    DATA_SHEET.getRange(job.row, INPUT_COL_NUM, 1, 1).setValue(beatmapURL);
   }
 }
 
@@ -753,15 +666,13 @@ function processBeatmapJobForBulk(job, bmRes, scRes, bmIndex, scIndex) {
   if (!beatmapData) {
     try {
       beatmapData = JSON.parse(bmRes[bmIndex].getContentText("UTF-8"))[0];
-    } catch (e) {
-      return { rowData: createErrorRow()[0] };
+    } catch (error) {
+      return { rowData: createErrorRow("API Error: " + error.message)[0] };
     }
-
     if (!beatmapData) {
       return { rowData: createErrorRow("Invalid beatmap ID")[0] };
     }
   }
-
   if (!job.scores) {
     try {
       scores = JSON.parse(scRes[scIndex].getContentText("UTF-8")) || [];
@@ -772,7 +683,6 @@ function processBeatmapJobForBulk(job, bmRes, scRes, bmIndex, scIndex) {
 
   const rowData = createBeatmapRow(beatmapData, scores);
   const result = { rowData };
-
   if (job.addInputURL && beatmapData) {
     result.inputURL = `https://osu.ppy.sh/beatmapsets/${beatmapData.beatmapset_id}#osu/${beatmapData.beatmap_id}`;
   }
@@ -796,15 +706,13 @@ function updateSpreadsheetRow(rowNumber) {
   );
 
   if (!beatmapID) {
-    // Check if input value is empty/cleared (not just missing beatmap ID)
-    const inputString = String(inputValue).trim();
+    const inputString = String(inputValue).trim(); // Check if input value is empty/cleared (not just missing beatmap ID)
     if (
       inputString === "" ||
       inputString === "null" ||
       inputString === "undefined"
     ) {
-      // Clear content first, then delete the row if it's not a header row
-      targetRange.clearContent();
+      targetRange.clearContent(); // Clear content first, then delete the row if it's not a header row
       if (rowNumber >= OUTPUT_ROW_NUM) {
         DATA_SHEET.deleteRow(rowNumber);
       }
@@ -826,12 +734,10 @@ function requestContent(url) {
     const response = UrlFetchApp.fetch(url, {
       muteHttpExceptions: true,
     });
-
     const responseCode = response.getResponseCode();
     if (responseCode !== 200) {
       throw new Error(`HTTP ${responseCode}: ${response.getContentText()}`);
     }
-
     const content = response.getContentText("UTF-8");
     Utilities.sleep(RATE_LIMIT_DELAY);
     return content;
@@ -853,6 +759,7 @@ function fetchFromAPI(beatmapID, endpoint) {
     scores: `get_scores?k=${OSU_API_KEY}&b=${beatmapID}`,
   };
   const url = `https://osu.ppy.sh/api/${endpointMap[endpoint]}`;
+
   return requestContent(url);
 }
 
@@ -865,7 +772,6 @@ function fetchBeatmapData(beatmapID) {
   try {
     const beatmapResponse = JSON.parse(fetchFromAPI(beatmapID, "beatmaps"));
     const beatmapData = beatmapResponse && beatmapResponse[0];
-
     if (!beatmapData) {
       return createErrorRow("Invalid beatmap ID");
     }
@@ -876,7 +782,6 @@ function fetchBeatmapData(beatmapID) {
     } catch (error) {
       console.log("Could not fetch scores:", error);
     }
-
     const rowData = createBeatmapRow(beatmapData, scores);
     return [rowData];
   } catch (error) {
@@ -901,7 +806,6 @@ function findBestScore(scores, maxCombo) {
   let bestDate = "";
 
   const scoreLimit = Math.min(scores.length, 50);
-
   for (let i = 0; i < scoreLimit; i++) {
     const score = scores[i];
     const combo = parseInt(score.maxcombo);
@@ -920,8 +824,6 @@ function findBestScore(scores, maxCombo) {
 
       const currentRankValue = getRankValue(score.rank);
       const bestRankValue = getRankValue(bestRank);
-
-      // Update if: higher combo, or same combo but better rank
       if (
         combo > bestCombo ||
         (combo === bestCombo && currentRankValue > bestRankValue)
@@ -937,9 +839,10 @@ function findBestScore(scores, maxCombo) {
   }
 
   const percentFC = (bestCombo / maxCombo) * 100;
+
   return {
     userID: bestUserID,
-    player: bestUserID ? createPlayerHyperlink(bestUserID, bestUsername) : "",
+    player: bestUsername,
     modString: bestModString,
     currentMaxCombo: bestCombo,
     rank: bestRank,
@@ -955,11 +858,10 @@ function findBestScore(scores, maxCombo) {
 function getExistingBeatmapIds() {
   const lastRow = DATA_SHEET.getLastRow();
   const rowCount = lastRow - OUTPUT_ROW_NUM + 1;
-  const beatmapIdCol = OUTPUT_COL_NUM + 10; // Column K (beatmap ID column)
-
-  const beatmapIds = DATA_SHEET.getRange(
+  const beatmapIDCol = OUTPUT_COL_NUM + 10; // Column K
+  const beatmapIDs = DATA_SHEET.getRange(
     OUTPUT_ROW_NUM,
-    beatmapIdCol,
+    beatmapIDCol,
     rowCount,
     1
   )
@@ -968,7 +870,7 @@ function getExistingBeatmapIds() {
     .map(String)
     .filter((id) => id && id !== "");
 
-  return beatmapIds;
+  return beatmapIDs;
 }
 
 /**
@@ -997,11 +899,9 @@ function isModAllowed(modsEnum) {
  */
 function isFC(score, maxCombo) {
   if (!score) return false;
-
   const rank = score.rank;
   const combo = parseInt(score.maxcombo);
   const modsEnum = parseInt(score.enabled_mods);
-
   const hasValidRank =
     rank === "S" || rank === "SH" || rank === "X" || rank === "XH";
   const hasHighCombo = combo >= maxCombo - 1; // maxcombo - 1 is an fc unless a sliderbreak occurs on the first note which must be a slider (extremely unlikely)
@@ -1026,7 +926,6 @@ function createBeatmapRow(beatmapData, scores) {
   const ar = parseFloat(beatmapData.diff_approach);
   const od = parseFloat(beatmapData.diff_overall);
   const hp = parseFloat(beatmapData.diff_drain);
-  const maxCombo = parseInt(beatmapData.max_combo);
   const mapper = createPlayerHyperlink(
     beatmapData.creator_id,
     beatmapData.creator
@@ -1035,7 +934,9 @@ function createBeatmapRow(beatmapData, scores) {
   const beatmapsetID = beatmapData.beatmapset_id;
   const rankedDate = formatDate(beatmapData.approved_date);
   const daysRanked = calculateDaysRanked(beatmapData.approved_date);
+  const maxCombo = parseInt(beatmapData.max_combo);
   const bestScore = findBestScore(scores, maxCombo);
+  const player = createPlayerHyperlink(bestScore.userID, bestScore.player);
 
   return [
     bg,
@@ -1052,7 +953,7 @@ function createBeatmapRow(beatmapData, scores) {
     beatmapsetID,
     rankedDate,
     daysRanked,
-    bestScore.player,
+    player,
     bestScore.scoreDate,
     bestScore.rank,
     bestScore.modString,
@@ -1082,6 +983,7 @@ function createBeatmapNameHyperlink(beatmapData) {
   const displayText = `${sanitize(beatmapData.artist)}\n${sanitize(
     beatmapData.title
   )}\n[${sanitize(beatmapData.version)}]`;
+
   return createHyperlink(url, displayText);
 }
 
@@ -1092,6 +994,7 @@ function createBeatmapNameHyperlink(beatmapData) {
  * @returns {string} Google Sheets formula for hyperlinked player name
  */
 function createPlayerHyperlink(userID, username) {
+  if (!userID) return "";
   return createHyperlink(`https://osu.ppy.sh/users/${userID}/osu`, username);
 }
 
@@ -1100,31 +1003,9 @@ function createPlayerHyperlink(userID, username) {
  * @param {string} message - Error message to display (defaults to "API Error")
  * @returns {Array} 2D array with error message in first cell, rest empty
  */
-function createErrorRow(message = "API Error") {
-  return [[message].concat(new Array(NUM_OUTPUT_COLS - 1))];
+function createErrorRow(message) {
+  return [[message, ...Array(NUM_OUTPUT_COLS - 1).fill("")]];
 }
-
-/**
- * Sets row data in the Data sheet and applies formatting (handles both 1D and 2D arrays)
- * @param {number} row - Row number to update
- * @param {Array} data - Row data array or 2D array
- */
-function setRowData(row, data) {
-  // Handle both single row array and 2D array formats
-  const isArray2D = Array.isArray(data[0]);
-  if (isArray2D) {
-    DATA_SHEET.getRange(
-      row,
-      OUTPUT_COL_NUM,
-      data.length,
-      data[0].length
-    ).setValues(data);
-  } else {
-    DATA_SHEET.getRange(row, OUTPUT_COL_NUM, 1, data.length).setValues([data]);
-  }
-  applyRowFormatting(row);
-}
-
 /**
  * Applies formatting to a row in the Data sheet
  * @param {number} rowNumber - Row number to format
@@ -1222,10 +1103,9 @@ function sortHistory() {
 }
 
 /**
- * Sorts History sheet by score date, then by star rating to break ties, and shows confirmation message
+ * Sorts History sheet with the sortHistory function and shows confirmation message
  */
 function sortHistoryManual() {
-  const lastRow = HISTORY_SHEET.getLastRow();
   sortHistory();
   showMessage(
     "History sheet has been sorted by score date, then by star rating (both oldest/lowest to newest/highest)."
@@ -1239,17 +1119,10 @@ function sortHistoryManual() {
  */
 function setBulkRowData(rowNumbers, allRowData) {
   if (rowNumbers.length === 0 || allRowData.length === 0) return;
-
-  // For now, write each row individually but without the sleep delays
-  // This still provides performance benefits by avoiding individual API calls during processing
   for (let i = 0; i < rowNumbers.length; i++) {
     const row = rowNumbers[i];
     const data = allRowData[i];
-
-    // Set the row data
     DATA_SHEET.getRange(row, OUTPUT_COL_NUM, 1, data.length).setValues([data]);
-
-    // Apply formatting
     applyRowFormatting(row);
   }
 }
@@ -1260,8 +1133,6 @@ function setBulkRowData(rowNumbers, allRowData) {
  */
 function setBulkInputURLs(inputURLs) {
   if (inputURLs.length === 0) return;
-
-  // Set each URL individually for now
   inputURLs.forEach((item) => {
     DATA_SHEET.getRange(item.row, INPUT_COL_NUM, 1, 1).setValue(item.url);
   });
