@@ -134,21 +134,11 @@ function calculateDaysRanked(approvedDate) {
  * @returns {number} Number of days from ranked to FC
  */
 function calculateDaysToFC(rankedDate, scoreDate) {
-  try {
-    const ranked = new Date(rankedDate);
-    const score = new Date(scoreDate);
-
-    if (isNaN(ranked.getTime()) || isNaN(score.getTime())) {
-      return 0;
-    }
-
-    const timeDifference = Math.abs(score - ranked);
-    const daysDifference = Math.ceil(timeDifference / (1000 * 60 * 60 * 24));
-    return daysDifference;
-  } catch (error) {
-    console.log("Error calculating days to FC:", error.message);
-    return 0;
-  }
+  const ranked = new Date(rankedDate);
+  const score = new Date(scoreDate);
+  const timeDifference = Math.abs(score - ranked);
+  const daysDifference = Math.ceil(timeDifference / (1000 * 60 * 60 * 24));
+  return daysDifference;
 }
 
 /**
@@ -347,6 +337,7 @@ function addNewRankedBeatmaps() {
   let nextRow = Math.max(lastRow + 1, OUTPUT_ROW_NUM);
 
   const jobs = [];
+  const skippedBeatmapIDs = [];
   let addedCount = 0;
 
   for (let i = 0; i < newBeatmaps.length; i++) {
@@ -368,14 +359,19 @@ function addNewRankedBeatmaps() {
         id: beatmap.beatmap_id,
         beatmapData: beatmap,
         scores: scores,
-        addInputUrl: true,
+        addInputURL: true,
       });
       addedCount++;
+    } else {
+      skippedBeatmapIDs.push({
+        beatmapsetID: beatmap.beatmapset_id,
+        beatmapID: beatmap.beatmap_id,
+      });
     }
   }
 
   if (jobs.length === 0) {
-    showMessage("All newly ranked beatmaps already have FC scores.");
+    showMessage("All newly ranked beatmaps already have FCs.");
     return;
   }
 
@@ -383,12 +379,26 @@ function addNewRankedBeatmaps() {
   sortBeatmapData();
 
   const skippedCount = newBeatmaps.length - addedCount;
-  let message = `Successfully added ${addedCount} newly ranked beatmap(s) to the spreadsheet!`;
-  if (skippedCount > 0) {
-    message += ` (Skipped ${skippedCount} with FCs)`;
+  let addedMessage = `Added ${addedCount} newly ranked beatmap(s) to the spreadsheet.`;
+  if (jobs.length > 0) {
+    addedMessage += "\n\nNewly added beatmaps:";
+    for (const job of jobs) {
+      const beatmapURL = `https://osu.ppy.sh/beatmapsets/${job.beatmapData.beatmapset_id}#osu/${job.beatmapData.beatmap_id}`;
+      addedMessage += `\n${beatmapURL}`;
+    }
   }
+  showMessage(addedMessage);
 
-  showMessage(message);
+  let skippedMessage = `Skipped ${skippedCount} beatmap(s) with FCs.`;
+  if (skippedBeatmapIDs.length > 0) {
+    skippedMessage += "\n\nSkipped beatmaps:";
+    for (const beatmapData of skippedBeatmapIDs) {
+      const beatmapURL = `https://osu.ppy.sh/beatmapsets/${beatmapData.beatmapsetID}#osu/${beatmapData.beatmapID}`;
+      skippedMessage += `\n${beatmapURL}`;
+    }
+  }
+  showMessage(skippedMessage);
+
   updateLastUpdatedTimestamp();
 }
 
@@ -440,15 +450,26 @@ function moveFCsToHistory() {
     const hasFC = isFC(mockScore, maxCombo);
 
     if (hasFC) {
+      const beatmapsetId = rowData[11]; // Column L (beatmapset ID)
+      const beatmapId = rowData[10]; // Column K (beatmap ID)
+
       if (daysRanked >= 30) {
         if (scoreDate && scoreDate !== "" && scoreDate !== null) {
           const parsedScoreDate = new Date(scoreDate);
           if (!isNaN(parsedScoreDate.getTime())) {
-            beatmapsToMoveToHistory.push(row);
+            beatmapsToMoveToHistory.push({
+              row: row,
+              beatmapsetID: beatmapsetId,
+              beatmapID: beatmapId,
+            });
           }
         }
       } else {
-        beatmapsToDelete.push(row);
+        beatmapsToDelete.push({
+          row: row,
+          beatmapsetID: beatmapsetId,
+          beatmapID: beatmapId,
+        });
       }
     }
   }
@@ -458,24 +479,20 @@ function moveFCsToHistory() {
 
   // Process deletions and moves in reverse order to avoid row shifting issues
   const allRowsToProcess = [
-    ...beatmapsToMoveToHistory.map((row) => ({ row, action: "move" })),
-    ...beatmapsToDelete.map((row) => ({ row, action: "delete" })),
+    ...beatmapsToMoveToHistory.map((item) => ({ ...item, action: "move" })),
+    ...beatmapsToDelete.map((item) => ({ ...item, action: "delete" })),
   ].sort((a, b) => b.row - a.row);
 
   let movedCount = 0;
   let deletedCount = 0;
 
-  for (const { row, action } of allRowsToProcess) {
-    try {
-      if (action === "move") {
-        moveRowToHistory(row);
-        movedCount++;
-      } else {
-        DATA_SHEET.deleteRow(row);
-        deletedCount++;
-      }
-    } catch (error) {
-      console.log(`Failed to ${action} row ${row}: ${error.message}`);
+  for (const item of allRowsToProcess) {
+    if (item.action === "move") {
+      moveRowToHistory(item.row);
+      movedCount++;
+    } else if (item.action === "delete") {
+      DATA_SHEET.deleteRow(item.row);
+      deletedCount++;
     }
   }
 
@@ -483,16 +500,25 @@ function moveFCsToHistory() {
     sortHistory();
   }
 
-  if (movedCount > 0 || deletedCount > 0) {
-    let message = "Refresh complete! ";
-    if (movedCount > 0) {
-      message += `Moved ${movedCount} beatmap(s) with FCs to History sheet (30+ days old). `;
+  let movedMessage = `Moved ${movedCount} beatmap(s) with FCs to History sheet (30+ days old).`;
+  if (beatmapsToMoveToHistory.length > 0) {
+    movedMessage += "\n\nBeatmaps moved to History:";
+    for (const beatmapData of beatmapsToMoveToHistory) {
+      const beatmapURL = `https://osu.ppy.sh/beatmapsets/${beatmapData.beatmapsetID}#osu/${beatmapData.beatmapID}`;
+      movedMessage += `\n${beatmapURL}`;
     }
-    if (deletedCount > 0) {
-      message += `Deleted ${deletedCount} beatmap(s) with FCs (less than 30 days old).`;
-    }
-    showMessage(message.trim());
   }
+  showMessage(movedMessage.trim());
+
+  let deletedMessage = `Deleted ${deletedCount} beatmap(s) with FCs (less than 30 days old).`;
+  if (beatmapsToDelete.length > 0) {
+    deletedMessage += "\n\nDeleted beatmaps:";
+    for (const beatmapData of beatmapsToDelete) {
+      const beatmapURL = `https://osu.ppy.sh/beatmapsets/${beatmapData.beatmapsetID}#osu/${beatmapData.beatmapID}`;
+      deletedMessage += `\n${beatmapURL}`;
+    }
+  }
+  showMessage(deletedMessage);
 }
 
 /**
@@ -502,6 +528,18 @@ function moveFCsToHistory() {
  */
 function moveRowToHistory(rowNumber) {
   const lastRow = DATA_SHEET.getLastRow();
+  if (isNaN(rowNumber)) {
+    showMessage(`Error: Row ${rowNumber} is not a valid number.`);
+    return false;
+  }
+
+  if (rowNumber < OUTPUT_ROW_NUM) {
+    showMessage(
+      `Error: Row ${rowNumber} is not a valid data row. Data starts at row ${OUTPUT_ROW_NUM}.`
+    );
+    return false;
+  }
+
   if (rowNumber > lastRow) {
     showMessage(
       `Error: Row ${rowNumber} does not exist. Last row is ${lastRow}.`
@@ -515,12 +553,6 @@ function moveRowToHistory(rowNumber) {
     1,
     NUM_OUTPUT_COLS
   ).getValues()[0];
-  if (
-    rowData.every((cell) => cell === "" || cell === null || cell === undefined)
-  ) {
-    showMessage(`Error: Row ${rowNumber} appears to be empty.`);
-    return false;
-  }
 
   const columnsToMove = NUM_OUTPUT_COLS - 1;
 
@@ -544,24 +576,16 @@ function moveRowToHistory(rowNumber) {
   const rankedDate = dataToMove[12]; // Column M (ranked date)
   const scoreDate = dataToMove[15]; // Column P (score date)
   dataToMove[13] = calculateDaysToFC(rankedDate, scoreDate); // Column N (days to FC)
-
   const historyLastRow = HISTORY_SHEET.getLastRow();
   const targetRow = historyLastRow + 1;
 
-  try {
-    HISTORY_SHEET.getRange(targetRow, 1, 1, dataToMove.length).setValues([
-      dataToMove,
-    ]);
-  } catch (error) {
-    showMessage(
-      `Error writing to History sheet at row ${targetRow}: ${error.message}`
-    );
-    return false;
-  }
-
+  HISTORY_SHEET.getRange(targetRow, 1, 1, dataToMove.length).setValues([
+    dataToMove,
+  ]);
   applyHistoryRowFormatting(targetRow);
   DATA_SHEET.deleteRow(rowNumber);
   sortHistory();
+  
   return true;
 }
 
@@ -584,13 +608,6 @@ function moveRowToHistoryManual() {
   const inputText = response.getResponseText().trim();
   const rowNumber = parseInt(inputText);
 
-  if (isNaN(rowNumber) || rowNumber < OUTPUT_ROW_NUM) {
-    showMessage(
-      `Error: Please enter a valid row number (${OUTPUT_ROW_NUM} or higher).`
-    );
-    return;
-  }
-
   const success = moveRowToHistory(rowNumber);
   if (success) {
     showMessage(`Successfully moved row ${rowNumber} to History sheet.`);
@@ -611,7 +628,7 @@ function updateLastUpdatedTimestamp() {
 
 /**
  * Processes beatmap jobs in batches of 15 with 3-second pauses between batches for rate limiting
- * @param {Array} jobs - Array of job objects with {row, id, beatmapData?, addInputUrl?}
+ * @param {Array} jobs - Array of job objects with {row, id, beatmapData?, addInputURL?}
  */
 function processBeatmapJobs(jobs) {
   const BATCH_SIZE = 15;
@@ -619,7 +636,7 @@ function processBeatmapJobs(jobs) {
 
   // Collect all processed data for bulk operations
   const allRowData = [];
-  const allInputUrls = [];
+  const allInputURLs = [];
   const rowNumbers = [];
 
   const beatmapApiTemplate = `https://osu.ppy.sh/api/get_beatmaps?k=${OSU_API_KEY}&b=`;
@@ -656,8 +673,8 @@ function processBeatmapJobs(jobs) {
       if (result) {
         allRowData.push(result.rowData);
         rowNumbers.push(job.row);
-        if (result.inputUrl) {
-          allInputUrls.push({ row: job.row, url: result.inputUrl });
+        if (result.inputURL) {
+          allInputURLs.push({ row: job.row, url: result.inputURL });
         }
       }
       if (!job.beatmapData) bmIndex++;
@@ -672,14 +689,14 @@ function processBeatmapJobs(jobs) {
   }
 
   // Bulk set input URLs
-  if (allInputUrls.length > 0) {
-    setBulkInputUrls(allInputUrls);
+  if (allInputURLs.length > 0) {
+    setBulkInputURLs(allInputURLs);
   }
 }
 
 /**
  * Processes a single beatmap job: fetches data, creates row, and optionally adds beatmap URL
- * @param {Object} job - Job object with {row, id, beatmapData?, scores?, addInputUrl?}
+ * @param {Object} job - Job object with {row, id, beatmapData?, scores?, addInputURL?}
  * @param {Array} bmRes - Beatmap API responses
  * @param {Array} scRes - Scores API responses
  * @param {number} bmIndex - Index for beatmap response
@@ -714,20 +731,20 @@ function processSingleBeatmapJob(job, bmRes, scRes, bmIndex, scIndex) {
   const rowData = createBeatmapRow(beatmapData, scores);
   setRowData(job.row, [rowData]);
 
-  if (job.addInputUrl && beatmapData) {
-    const beatmapUrl = `https://osu.ppy.sh/beatmapsets/${beatmapData.beatmapset_id}#osu/${beatmapData.beatmap_id}`;
-    DATA_SHEET.getRange(job.row, INPUT_COL_NUM, 1, 1).setValue(beatmapUrl);
+  if (job.addInputURL && beatmapData) {
+    const beatmapURL = `https://osu.ppy.sh/beatmapsets/${beatmapData.beatmapset_id}#osu/${beatmapData.beatmap_id}`;
+    DATA_SHEET.getRange(job.row, INPUT_COL_NUM, 1, 1).setValue(beatmapURL);
   }
 }
 
 /**
  * Processes a single beatmap job for bulk operations: returns data instead of immediately writing
- * @param {Object} job - Job object with {row, id, beatmapData?, scores?, addInputUrl?}
+ * @param {Object} job - Job object with {row, id, beatmapData?, scores?, addInputURL?}
  * @param {Array} bmRes - Beatmap API responses
  * @param {Array} scRes - Scores API responses
  * @param {number} bmIndex - Index for beatmap response
  * @param {number} scIndex - Index for scores response
- * @returns {Object|null} Result object with rowData and optional inputUrl
+ * @returns {Object|null} Result object with rowData and optional inputURL
  */
 function processBeatmapJobForBulk(job, bmRes, scRes, bmIndex, scIndex) {
   let beatmapData = job.beatmapData;
@@ -756,8 +773,8 @@ function processBeatmapJobForBulk(job, bmRes, scRes, bmIndex, scIndex) {
   const rowData = createBeatmapRow(beatmapData, scores);
   const result = { rowData };
 
-  if (job.addInputUrl && beatmapData) {
-    result.inputUrl = `https://osu.ppy.sh/beatmapsets/${beatmapData.beatmapset_id}#osu/${beatmapData.beatmap_id}`;
+  if (job.addInputURL && beatmapData) {
+    result.inputURL = `https://osu.ppy.sh/beatmapsets/${beatmapData.beatmapset_id}#osu/${beatmapData.beatmap_id}`;
   }
 
   return result;
@@ -1239,13 +1256,13 @@ function setBulkRowData(rowNumbers, allRowData) {
 
 /**
  * Bulk sets input URLs for multiple rows
- * @param {Array} inputUrls - Array of {row, url} objects
+ * @param {Array} inputURLs - Array of {row, url} objects
  */
-function setBulkInputUrls(inputUrls) {
-  if (inputUrls.length === 0) return;
+function setBulkInputURLs(inputURLs) {
+  if (inputURLs.length === 0) return;
 
   // Set each URL individually for now
-  inputUrls.forEach((item) => {
+  inputURLs.forEach((item) => {
     DATA_SHEET.getRange(item.row, INPUT_COL_NUM, 1, 1).setValue(item.url);
   });
 }
