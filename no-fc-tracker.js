@@ -580,16 +580,14 @@ function moveRowToHistoryManual() {
 }
 
 /**
- * Updates the "Last Updated" timestamp in the About sheet
+ * Updates the "Last Updated" timestamp in the About sheet (local timezone)
  */
 function updateLastUpdatedTimestamp() {
-  const now = new Date();
-  const yesterdayUTC = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1)
-  );
-  ABOUT_SHEET.getRange(LAST_UPDATED_RANGE).setValue(
-    `Last Updated: ${formatDate(yesterdayUTC)}`
-  );
+  const timezone = SpreadsheetApp.getActive().getSpreadsheetTimeZone();
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const stamp = Utilities.formatDate(yesterday, timezone, "M/d/yyyy");
+  ABOUT_SHEET.getRange(LAST_UPDATED_RANGE).setValue(`Last Updated: ${stamp}`);
 }
 
 /**
