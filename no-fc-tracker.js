@@ -92,14 +92,14 @@ function showMessage(message) {
  * @param {string|Date} dateInput - Date string (YYYY-MM-DD HH:MM:SS) or Date object
  * @returns {string} Formatted date string
  */
-function formatDate(dateInput) {
-  const date =
-    typeof dateInput === "string" ? new Date(dateInput + " UTC") : dateInput;
-  const isUTC = typeof dateInput === "string";
-  const month = isUTC ? date.getUTCMonth() + 1 : date.getMonth() + 1;
-  const day = isUTC ? date.getUTCDate() : date.getDate();
-  const year = isUTC ? date.getUTCFullYear() : date.getFullYear();
-
+function formatDate(input) {
+  const d =
+    typeof input === "string"
+      ? new Date(input.replace(" ", "T") + "Z")
+      : new Date(input);
+  const month = d.getUTCMonth() + 1;
+  const day = d.getUTCDate();
+  const year = d.getUTCFullYear();
   return `${month}/${day}/${year}`;
 }
 
@@ -116,32 +116,29 @@ function formatLength(totalSeconds) {
 }
 
 /**
- * Calculates days since beatmap was ranked
- * @param {string} approvedDateString - Date in YYYY-MM-DD HH:MM:SS format
- * @returns {number} Number of days since ranked
+ * Calculates days since beatmap was ranked (UTC-safe)
+ * @param {string} approvedDateString - "YYYY-MM-DD HH:MM:SS" from osu! API (UTC)
+ * @returns {number} Days since ranked
  */
 function calculateDaysRanked(approvedDateString) {
-  const approvedDate = new Date(approvedDateString + " UTC");
-  const now = new Date();
-  const timeDifference = Math.abs(now - approvedDate);
-  const daysDifference = Math.ceil(timeDifference / (1000 * 60 * 60 * 24));
-
-  return daysDifference;
+  const approvedUTC = new Date(approvedDateString.replace(" ", "T") + "Z");
+  const diffMs = Date.now() - approvedUTC.getTime();
+  return Math.ceil(diffMs / 86400000); // 86400000 ms per day
 }
 
 /**
- * Calculates days between ranked date and score date (for history records)
- * @param {string} rankedDateString - Ranked date in MM/DD/YYYY format
- * @param {string} scoreDateString - Score date in MM/DD/YYYY format
- * @returns {number} Number of days from ranked to FC
+ * Calculates days between ranked date and score date using UTC midnights
+ * (avoids DST/local timezone skew)
+ * @param {string} rankedDateString - "MM/DD/YYYY"
+ * @param {string} scoreDateString  - "MM/DD/YYYY"
+ * @returns {number} Days from ranked to FC
  */
 function calculateDaysToFC(rankedDateString, scoreDateString) {
-  const rankedDate = new Date(rankedDateString);
-  const scoreDate = new Date(scoreDateString);
-  const timeDifference = Math.abs(scoreDate - rankedDate);
-  const daysDifference = Math.ceil(timeDifference / (1000 * 60 * 60 * 24));
-
-  return daysDifference;
+  const [rm, rd, ry] = rankedDateString.split("/").map(Number);
+  const [sm, sd, sy] = scoreDateString.split("/").map(Number);
+  const rankedUTC = Date.UTC(ry, rm - 1, rd);
+  const scoreUTC = Date.UTC(sy, sm - 1, sd);
+  return Math.ceil((scoreUTC - rankedUTC) / 86400000);
 }
 
 /**
@@ -586,11 +583,13 @@ function moveRowToHistoryManual() {
  * Updates the "Last Updated" timestamp in the About sheet
  */
 function updateLastUpdatedTimestamp() {
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  const yesterdayString = formatDate(yesterday);
-  const mergedRange = ABOUT_SHEET.getRange(LAST_UPDATED_RANGE);
-  mergedRange.setValue(`Last Updated: ${yesterdayString}`);
+  const now = new Date();
+  const yesterdayUTC = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1)
+  );
+  ABOUT_SHEET.getRange(LAST_UPDATED_RANGE).setValue(
+    `Last Updated: ${formatDate(yesterdayUTC)}`
+  );
 }
 
 /**
