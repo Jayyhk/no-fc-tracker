@@ -100,6 +100,7 @@ function formatDate(input) {
   const month = d.getUTCMonth() + 1;
   const day = d.getUTCDate();
   const year = d.getUTCFullYear();
+
   return `${month}/${day}/${year}`;
 }
 
@@ -123,12 +124,12 @@ function formatLength(totalSeconds) {
 function calculateDaysRanked(approvedDateString) {
   const approvedUTC = new Date(approvedDateString.replace(" ", "T") + "Z");
   const diffMs = Date.now() - approvedUTC.getTime();
+
   return Math.ceil(diffMs / 86400000); // 86400000 ms per day
 }
 
 /**
- * Calculates days between ranked date and score date using UTC midnights
- * (avoids DST/local timezone skew)
+ * Calculates days between ranked date and score date using UTC midnights (avoids DST/local timezone skew)
  * @param {string} rankedDateString - "MM/DD/YYYY"
  * @param {string} scoreDateString  - "MM/DD/YYYY"
  * @returns {number} Days from ranked to FC
@@ -138,7 +139,8 @@ function calculateDaysToFC(rankedDateString, scoreDateString) {
   const [sm, sd, sy] = scoreDateString.split("/").map(Number);
   const rankedUTC = Date.UTC(ry, rm - 1, rd);
   const scoreUTC = Date.UTC(sy, sm - 1, sd);
-  return Math.ceil((scoreUTC - rankedUTC) / 86400000);
+
+  return Math.ceil((scoreUTC - rankedUTC) / 86400000); // 86400000 ms per day
 }
 
 /**
