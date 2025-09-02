@@ -283,7 +283,7 @@ function refreshAllBeatmaps() {
   processBeatmapJobs(jobs);
   moveFCsToHistory();
   updateLastUpdatedTimestamp();
-  showMessage(`Refresh complete! Updated ${jobs.length} beatmap(s).`);
+  showMessage(`Refresh all beatmaps complete! Updated ${jobs.length} beatmap(s).`);
 }
 
 /**
@@ -387,6 +387,7 @@ function addNewRankedBeatmaps() {
   showMessage(skippedMessage);
 
   updateLastUpdatedTimestamp();
+  showMessage("Add new ranked beatmaps complete!");
 }
 
 /**
