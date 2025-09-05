@@ -593,12 +593,12 @@ function updateLastUpdatedTimestamp() {
 }
 
 /**
- * Processes beatmap jobs in batches of 15 with 3-second pauses between batches for rate limiting
+ * Processes beatmap jobs in batches of 15 with 3.5-second pauses between batches for rate limiting
  * @param {Array} jobs - Array of job objects with {row, id, beatmapData?, addInputURL?}
  */
 function processBeatmapJobs(jobs) {
   const BATCH_SIZE = 15;
-  const PAUSE_MS = 3000;
+  const PAUSE_MS = 3500;
   const allRowData = [];
   const allInputURLs = [];
   const rowNumbers = [];
@@ -619,8 +619,21 @@ function processBeatmapJobs(jobs) {
       .map((job) => ({
         url: scoresApiTemplate + job.id,
       }));
-    const bmRes = bmCalls.length > 0 ? UrlFetchApp.fetchAll(bmCalls) : [];
-    const scRes = scCalls.length > 0 ? UrlFetchApp.fetchAll(scCalls) : [];
+
+    let bmRes = [];
+    let scRes = [];
+    try {
+      bmRes = bmCalls.length > 0 ? UrlFetchApp.fetchAll(bmCalls) : [];
+      scRes = scCalls.length > 0 ? UrlFetchApp.fetchAll(scCalls) : [];
+    } catch (error) {
+      const batchNumber = Math.floor(offset / BATCH_SIZE) + 1;
+      const beatmapNumber = offset + 1;
+      console.error(
+        `Error fetching beatmap data for beatmap #${beatmapNumber} (ID: ${batch[0].id}) (batch ${batchNumber})`
+      );
+      console.error(`Error details: ${error}`);
+      throw error; // Re-throw to terminate execution
+    }
 
     let bmIndex = 0;
     let scIndex = 0;
