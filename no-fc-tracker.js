@@ -598,7 +598,7 @@ function updateLastUpdatedTimestamp() {
  */
 function processBeatmapJobs(jobs) {
   const BATCH_SIZE = 15;
-  const PAUSE_MS = 3500;
+  const PAUSE_MS = 4000;
   const allRowData = [];
   const allInputURLs = [];
   const rowNumbers = [];
