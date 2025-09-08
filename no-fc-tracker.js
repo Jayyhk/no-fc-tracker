@@ -131,21 +131,9 @@ function formatLength(totalSeconds) {
  * @returns {number} Days since ranked
  */
 function calculateDaysRanked(approvedDateString) {
-  if (!approvedDateString || typeof approvedDateString !== "string") {
-    return 0;
-  }
-
-  try {
-    const approvedUTC = new Date(approvedDateString.replace(" ", "T") + "Z");
-    if (isNaN(approvedUTC.getTime())) {
-      return 0;
-    }
-    const diffMs = Date.now() - approvedUTC.getTime();
-    return Math.ceil(diffMs / 86400000); // 86400000 ms per day
-  } catch (error) {
-    showMessage("Error calculating days ranked: " + error.message);
-    return 0;
-  }
+  const approvedUTC = new Date(approvedDateString.replace(" ", "T") + "Z");
+  const diffMs = Date.now() - approvedUTC.getTime();
+  return Math.ceil(diffMs / 86400000); // 86400000 ms per day
 }
 
 /**
@@ -155,41 +143,11 @@ function calculateDaysRanked(approvedDateString) {
  * @returns {number} Days from ranked to FC
  */
 function calculateDaysToFC(rankedDateString, scoreDateString) {
-  if (
-    !rankedDateString ||
-    typeof rankedDateString !== "string" ||
-    !scoreDateString ||
-    typeof scoreDateString !== "string"
-  ) {
-    return 0;
-  }
-  if (!rankedDateString.includes("/") || !scoreDateString.includes("/")) {
-    return 0;
-  }
-
-  try {
-    const [rm, rd, ry] = rankedDateString.split("/").map(Number);
-    const [sm, sd, sy] = scoreDateString.split("/").map(Number);
-    if (
-      isNaN(rm) ||
-      isNaN(rd) ||
-      isNaN(ry) ||
-      isNaN(sm) ||
-      isNaN(sd) ||
-      isNaN(sy)
-    ) {
-      return 0;
-    }
-    const rankedUTC = Date.UTC(ry, rm - 1, rd);
-    const scoreUTC = Date.UTC(sy, sm - 1, sd);
-    if (isNaN(rankedUTC) || isNaN(scoreUTC)) {
-      return 0;
-    }
-    return Math.ceil((scoreUTC - rankedUTC) / 86400000); // 86400000 ms per day
-  } catch (error) {
-    showMessage("Error calculating days to FC: " + error.message);
-    return 0;
-  }
+  const [rm, rd, ry] = rankedDateString.split("/").map(Number);
+  const [sm, sd, sy] = scoreDateString.split("/").map(Number);
+  const rankedUTC = Date.UTC(ry, rm - 1, rd);
+  const scoreUTC = Date.UTC(sy, sm - 1, sd);
+  return Math.ceil((scoreUTC - rankedUTC) / 86400000); // 86400000 ms per day
 }
 
 /**
@@ -592,8 +550,12 @@ function moveRowToHistory(rowNumber) {
   const dataToMove = formulas.map((formula, index) => {
     return formula || values[index];
   });
-  const rankedDate = dataToMove[12] || ""; // Column M (ranked date)
-  const scoreDate = dataToMove[15] || ""; // Column P (score date)
+  const rawRankedDate = dataToMove[12]; // Column M (ranked date)
+  const rawScoreDate = dataToMove[15]; // Column P (score date)
+  const rankedDate =
+    rawRankedDate instanceof Date ? formatDate(rawRankedDate) : rawRankedDate;
+  const scoreDate =
+    rawScoreDate instanceof Date ? formatDate(rawScoreDate) : rawScoreDate;
   dataToMove[13] = calculateDaysToFC(rankedDate, scoreDate); // Column N (days to FC)
   const historyLastRow = HISTORY_SHEET.getLastRow();
   const targetRow = historyLastRow + 1;
