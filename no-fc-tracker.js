@@ -45,7 +45,7 @@ const OSU_API_KEY = (() => {
     }
     throw new Error("OSU_API_KEY not found in Script Properties");
   } catch (error) {
-    console.error("Error getting API key:", error.message);
+    showMessage("Error getting API key: " + error.message);
     throw new Error(
       "Please set OSU_API_KEY in Google Apps Script Project Settings -> Script Properties"
     );
@@ -93,15 +93,24 @@ function showMessage(message) {
  * @returns {string} Formatted date string
  */
 function formatDate(input) {
-  const d =
-    typeof input === "string"
-      ? new Date(input.replace(" ", "T") + "Z")
-      : new Date(input);
-  const month = d.getUTCMonth() + 1;
-  const day = d.getUTCDate();
-  const year = d.getUTCFullYear();
+  if (!input) return "";
 
-  return `${month}/${day}/${year}`;
+  try {
+    const d =
+      typeof input === "string"
+        ? new Date(input.replace(" ", "T") + "Z")
+        : new Date(input);
+    if (isNaN(d.getTime())) {
+      return "";
+    }
+    const month = d.getUTCMonth() + 1;
+    const day = d.getUTCDate();
+    const year = d.getUTCFullYear();
+    return `${month}/${day}/${year}`;
+  } catch (error) {
+    showMessage("Error formatting date: " + error.message);
+    return "";
+  }
 }
 
 /**
@@ -122,10 +131,21 @@ function formatLength(totalSeconds) {
  * @returns {number} Days since ranked
  */
 function calculateDaysRanked(approvedDateString) {
-  const approvedUTC = new Date(approvedDateString.replace(" ", "T") + "Z");
-  const diffMs = Date.now() - approvedUTC.getTime();
+  if (!approvedDateString || typeof approvedDateString !== "string") {
+    return 0;
+  }
 
-  return Math.ceil(diffMs / 86400000); // 86400000 ms per day
+  try {
+    const approvedUTC = new Date(approvedDateString.replace(" ", "T") + "Z");
+    if (isNaN(approvedUTC.getTime())) {
+      return 0;
+    }
+    const diffMs = Date.now() - approvedUTC.getTime();
+    return Math.ceil(diffMs / 86400000); // 86400000 ms per day
+  } catch (error) {
+    showMessage("Error calculating days ranked: " + error.message);
+    return 0;
+  }
 }
 
 /**
@@ -135,12 +155,41 @@ function calculateDaysRanked(approvedDateString) {
  * @returns {number} Days from ranked to FC
  */
 function calculateDaysToFC(rankedDateString, scoreDateString) {
-  const [rm, rd, ry] = rankedDateString.split("/").map(Number);
-  const [sm, sd, sy] = scoreDateString.split("/").map(Number);
-  const rankedUTC = Date.UTC(ry, rm - 1, rd);
-  const scoreUTC = Date.UTC(sy, sm - 1, sd);
+  if (
+    !rankedDateString ||
+    typeof rankedDateString !== "string" ||
+    !scoreDateString ||
+    typeof scoreDateString !== "string"
+  ) {
+    return 0;
+  }
+  if (!rankedDateString.includes("/") || !scoreDateString.includes("/")) {
+    return 0;
+  }
 
-  return Math.ceil((scoreUTC - rankedUTC) / 86400000); // 86400000 ms per day
+  try {
+    const [rm, rd, ry] = rankedDateString.split("/").map(Number);
+    const [sm, sd, sy] = scoreDateString.split("/").map(Number);
+    if (
+      isNaN(rm) ||
+      isNaN(rd) ||
+      isNaN(ry) ||
+      isNaN(sm) ||
+      isNaN(sd) ||
+      isNaN(sy)
+    ) {
+      return 0;
+    }
+    const rankedUTC = Date.UTC(ry, rm - 1, rd);
+    const scoreUTC = Date.UTC(sy, sm - 1, sd);
+    if (isNaN(rankedUTC) || isNaN(scoreUTC)) {
+      return 0;
+    }
+    return Math.ceil((scoreUTC - rankedUTC) / 86400000); // 86400000 ms per day
+  } catch (error) {
+    showMessage("Error calculating days to FC: " + error.message);
+    return 0;
+  }
 }
 
 /**
@@ -337,7 +386,7 @@ function addNewRankedBeatmaps() {
     try {
       scores = JSON.parse(fetchFromAPI(beatmap.beatmap_id, "scores")) || [];
     } catch (error) {
-      console.log("Could not fetch scores for beatmap " + beatmap.beatmap_id);
+      showMessage("Could not fetch scores for beatmap " + beatmap.beatmap_id);
     }
     const maxCombo = parseInt(beatmap.max_combo);
     const hasFC = scores.some((score) => isFC(score, maxCombo));
@@ -543,8 +592,8 @@ function moveRowToHistory(rowNumber) {
   const dataToMove = formulas.map((formula, index) => {
     return formula || values[index];
   });
-  const rankedDate = dataToMove[12]; // Column M (ranked date)
-  const scoreDate = dataToMove[15]; // Column P (score date)
+  const rankedDate = dataToMove[12] || ""; // Column M (ranked date)
+  const scoreDate = dataToMove[15] || ""; // Column P (score date)
   dataToMove[13] = calculateDaysToFC(rankedDate, scoreDate); // Column N (days to FC)
   const historyLastRow = HISTORY_SHEET.getLastRow();
   const targetRow = historyLastRow + 1;
@@ -628,10 +677,10 @@ function processBeatmapJobs(jobs) {
     } catch (error) {
       const batchNumber = Math.floor(offset / BATCH_SIZE) + 1;
       const beatmapNumber = offset + 1;
-      console.error(
+      showMessage(
         `Error fetching beatmap data for beatmap #${beatmapNumber} (ID: ${batch[0].id}) (batch ${batchNumber})`
       );
-      console.error(`Error details: ${error}`);
+      showMessage(`Error details: ${error}`);
       throw error; // Re-throw to terminate execution
     }
 
@@ -694,7 +743,7 @@ function processBeatmapJobForBulk(job, bmRes, scRes, bmIndex, scIndex) {
     try {
       scores = JSON.parse(scRes[scIndex].getContentText("UTF-8")) || [];
     } catch (error) {
-      console.log("Could not fetch scores for beatmap " + job.id);
+      showMessage("Could not fetch scores for beatmap " + job.id);
     }
   }
 
@@ -759,7 +808,7 @@ function requestContent(url) {
     Utilities.sleep(RATE_LIMIT_DELAY);
     return content;
   } catch (error) {
-    console.error(`API request failed for ${url}: ${error.message}`);
+    showMessage(`API request failed for ${url}: ${error.message}`);
     throw error;
   }
 }
@@ -797,12 +846,12 @@ function fetchBeatmapData(beatmapID) {
     try {
       scores = JSON.parse(fetchFromAPI(beatmapData.beatmap_id, "scores")) || [];
     } catch (error) {
-      console.log("Could not fetch scores:", error);
+      showMessage("Could not fetch scores: " + error);
     }
     const rowData = createBeatmapRow(beatmapData, scores);
     return [rowData];
   } catch (error) {
-    console.error("Error in fetchBeatmapData:", error);
+    showMessage("Error in fetchBeatmapData: " + error);
     return createErrorRow("API Error: " + error.message);
   }
 }
