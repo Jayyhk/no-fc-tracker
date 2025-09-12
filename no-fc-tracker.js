@@ -172,6 +172,26 @@ function getModString(modsEnum) {
 }
 
 /**
+ * Converts mod string to enum representation
+ * @param {string} modString - String representation of mods
+ * @returns {number} Bitwise mod flags
+ */
+function getModEnum(modString) {
+  if (modString === "NM" || modString === "") return 0;
+  let modsEnum = 0;
+  const modMap = Object.fromEntries(
+    Object.entries(ALLOWED_MODS).map(([k, v]) => [v, parseInt(k)])
+  );
+  for (let i = 0; i < modString.length; i += 2) {
+    const mod = modString.substr(i, 2);
+    if (modMap[mod]) {
+      modsEnum |= modMap[mod];
+    }
+  }
+  return modsEnum;
+}
+
+/**
  * Creates the custom menu when the spreadsheet opens
  */
 function onOpen() {
@@ -428,19 +448,17 @@ function moveFCsToHistory() {
     const daysRanked = parseInt(rowData[13]); // Column N (days ranked)
     const scoreDate = rowData[15]; // Column P (score date)
     const rank = rowData[16]; // Column Q (rank)
+    const modString = rowData[17]; // Column R (mods)
     const currentMaxCombo = parseInt(rowData[18]); // Column S (current max combo)
     const maxCombo = parseInt(rowData[19]); // Column T (max combo)
     if (isNaN(daysRanked) || isNaN(currentMaxCombo) || isNaN(maxCombo))
       continue;
-
-    // Create mock score object to use with existing isFC method
-    // Mods are already validated when added to sheet, so we can use NM (0)
-    const mockScore = {
+    const score = {
       rank: rank,
       maxcombo: currentMaxCombo,
-      enabled_mods: 0, // 0 = NM
+      enabled_mods: getModEnum(modString),
     };
-    const hasFC = isFC(mockScore, maxCombo);
+    const hasFC = isFC(score, maxCombo);
 
     if (hasFC) {
       const beatmapsetID = rowData[11]; // Column L (beatmapset ID)
@@ -465,9 +483,6 @@ function moveFCsToHistory() {
       }
     }
   }
-
-  if (beatmapsToMoveToHistory.length === 0 && beatmapsToDelete.length === 0)
-    return;
 
   // Process deletions and moves in reverse order to avoid row shifting issues
   const allRowsToProcess = [
