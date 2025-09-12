@@ -7,7 +7,7 @@ This is a Google Apps Script that tracks all osu!standard beatmaps without a Ful
 >
 > **Allowed mods:** NM, NF, HD, HR, SD, DT, NC, FL, PF
 >
-> **Forbidden mods:** EZ, TD, HT, SO
+> **Disallowed mods:** EZ, TD, HT, SO
 
 > [!CAUTION]
 > Scores that do not obtain a combo `>= max_combo - 1` will not be removed, as a sliderbreak may have occurred. Even though these scores may be FCs, we assume the worst case scenario to prevent false positives. These scores must be manually reviewed and/or removed.
