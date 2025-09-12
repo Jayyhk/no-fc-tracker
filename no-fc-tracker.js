@@ -7,25 +7,23 @@ const OUTPUT_COL_NUM = letterToColumn("A"); // Column to start outputting beatma
 const OUTPUT_ROW_NUM = 2; // Row to start outputting beatmap info
 const NUM_OUTPUT_COLS = 21; // Number of columns to return
 const LAST_UPDATED_RANGE = "B18:G19"; // Cell range for "Last Updated" timestamp in About sheet
-const RATE_LIMIT_DELAY = 200; // API rate limiting delay in ms
+const RATE_LIMIT_DELAY = 250; // API rate limiting delay in ms
 const ALLOWED_MODS = {
-  ALL_MODS: {
-    0: "NM",
-    1: "NF",
-    2: "EZ",
-    4: "TD",
-    8: "HD",
-    16: "HR",
-    32: "SD",
-    64: "DT",
-    256: "HT",
-    512: "NC",
-    1024: "FL",
-    4096: "SO",
-    16384: "PF",
-  },
-  FORBIDDEN: 2 | 4 | 256 | 4096, // EZ | TD | HT | SO
+  0: "NM",
+  1: "NF",
+  2: "EZ",
+  4: "TD",
+  8: "HD",
+  16: "HR",
+  32: "SD",
+  64: "DT",
+  256: "HT",
+  512: "NC",
+  1024: "FL",
+  4096: "SO",
+  16384: "PF",
 };
+const DISALLOWED_MODS = 2 | 4 | 256 | 4096; // EZ | TD | HT | SO
 const RANK_VALUE_MAP = new Map([
   ["D", 1],
   ["C", 2],
@@ -160,13 +158,13 @@ function getModString(modsEnum) {
   if (modsEnum & 512) modsEnum &= ~64; // If NC present, drop DT bit (512 = NC, 64 = DT)
   if (modsEnum & 16384) modsEnum &= ~32; // If PF present, drop SD bit (16384 = PF, 32 = SD)
   let modString = "";
-  const modFlags = Object.keys(ALLOWED_MODS.ALL_MODS)
+  const modFlags = Object.keys(ALLOWED_MODS)
     .map(Number)
     .filter((flag) => flag > 0)
     .sort((a, b) => a - b);
   for (const modFlag of modFlags) {
     if (modsEnum & modFlag) {
-      modString += ALLOWED_MODS.ALL_MODS[modFlag];
+      modString += ALLOWED_MODS[modFlag];
     }
   }
 
@@ -911,12 +909,12 @@ function getRankValue(rank) {
 }
 
 /**
- * Checks if mod combination is allowed (no forbidden mods)
+ * Checks if mod combination is allowed (no disallowed mods)
  * @param {number} modsEnum - Bitwise mod flags
  * @returns {boolean} True if mod combination is allowed
  */
 function isModAllowed(modsEnum) {
-  return (modsEnum & ALLOWED_MODS.FORBIDDEN) === 0;
+  return (modsEnum & DISALLOWED_MODS) === 0;
 }
 
 /**
@@ -927,13 +925,22 @@ function isModAllowed(modsEnum) {
  */
 function isFC(score, maxCombo) {
   if (!score) return false;
+
   const rank = score.rank;
-  const combo = parseInt(score.maxcombo);
-  const modsEnum = parseInt(score.enabled_mods);
   const hasValidRank =
     rank === "S" || rank === "SH" || rank === "X" || rank === "XH";
-  const hasHighCombo = combo >= maxCombo - 1; // maxcombo - 1 is an fc unless a sliderbreak occurs on the first note which must be a slider (extremely unlikely)
+  if (!hasValidRank) return false;
+
+  const modsEnum = parseInt(score.enabled_mods);
   const hasAllowedMods = isModAllowed(modsEnum);
+  const hasSD = (modsEnum & 32) !== 0; // SD
+  const hasPF = (modsEnum & 16384) !== 0; // PF
+  if ((hasSD || hasPF) && hasAllowedMods) {
+    return true;
+  }
+
+  const combo = parseInt(score.maxcombo);
+  const hasHighCombo = combo >= maxCombo - 1; // maxcombo - 1 is an fc unless a sliderbreak occurs on the first note which must be a slider (extremely unlikely)
 
   return hasValidRank && hasHighCombo && hasAllowedMods;
 }
