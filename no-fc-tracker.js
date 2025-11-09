@@ -9,9 +9,9 @@ const NUM_OUTPUT_COLS = 21; // Number of columns to return
 const LAST_UPDATED_RANGE = "B18:G19"; // Cell range for "Last Updated" timestamp in About sheet
 const RATE_LIMIT_DELAY = 250; // API rate limiting delay in ms
 const REFRESH_CHUNK_SIZE = 100; // Number of beatmaps to process per execution chunk
-const API_BATCH_SIZE = 15; // Number of API calls per batch within a chunk
-const API_BATCH_PAUSE = 4000; // Pause between API batches in ms
 const CHUNK_DELAY = 1000; // Delay before triggering next execution chunk in ms
+const BATCH_SIZE = 15; // Number of API calls per batch within a chunk
+const BATCH_PAUSE = 4000; // Pause between API batches in ms
 const ALLOWED_MODS = {
   0: "NM",
   1: "NF",
@@ -657,8 +657,8 @@ function processBeatmapJobs(jobs) {
   const beatmapApiTemplate = `https://osu.ppy.sh/api/get_beatmaps?k=${OSU_API_KEY}&b=`;
   const scoresApiTemplate = `https://osu.ppy.sh/api/get_scores?k=${OSU_API_KEY}&b=`;
 
-  for (let offset = 0; offset < jobs.length; offset += API_BATCH_SIZE) {
-    const batch = jobs.slice(offset, offset + API_BATCH_SIZE);
+  for (let offset = 0; offset < jobs.length; offset += BATCH_SIZE) {
+    const batch = jobs.slice(offset, offset + BATCH_SIZE);
     // Create beatmap API calls only for jobs that don't have beatmap data
     const bmCalls = batch
       .filter((job) => !job.beatmapData)
@@ -678,7 +678,7 @@ function processBeatmapJobs(jobs) {
       bmRes = bmCalls.length > 0 ? UrlFetchApp.fetchAll(bmCalls) : [];
       scRes = scCalls.length > 0 ? UrlFetchApp.fetchAll(scCalls) : [];
     } catch (error) {
-      const batchNumber = Math.floor(offset / API_BATCH_SIZE) + 1;
+      const batchNumber = Math.floor(offset / BATCH_SIZE) + 1;
       const beatmapNumber = offset + 1;
       showMessage(
         `Error fetching beatmap data for beatmap #${beatmapNumber} (ID: ${batch[0].id}) (batch ${batchNumber})`
@@ -708,7 +708,7 @@ function processBeatmapJobs(jobs) {
       if (!job.beatmapData) bmIndex++;
       if (!job.scores) scIndex++;
     });
-    Utilities.sleep(API_BATCH_PAUSE);
+    Utilities.sleep(BATCH_PAUSE);
   }
 
   if (allRowData.length > 0) {
