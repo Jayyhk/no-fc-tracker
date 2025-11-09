@@ -8,6 +8,10 @@ const OUTPUT_ROW_NUM = 2; // Row to start outputting beatmap info
 const NUM_OUTPUT_COLS = 21; // Number of columns to return
 const LAST_UPDATED_RANGE = "B18:G19"; // Cell range for "Last Updated" timestamp in About sheet
 const RATE_LIMIT_DELAY = 250; // API rate limiting delay in ms
+const REFRESH_CHUNK_SIZE = 100; // Number of beatmaps to process per execution chunk
+const API_BATCH_SIZE = 15; // Number of API calls per batch within a chunk
+const API_BATCH_PAUSE = 4000; // Pause between API batches in ms
+const CHUNK_DELAY = 1000; // Delay before triggering next execution chunk in ms
 const ALLOWED_MODS = {
   0: "NM",
   1: "NF",
@@ -278,10 +282,10 @@ function setBeatmapDataOnEdit(e) {
 
 /**
  * Bulk-refreshes all beatmaps by reading beatmap IDs directly from column K.
- * Processes in 15-map chunks with 3-second pauses between batches.
+ * Processes in chunks to avoid timeout.
  * Also moves any FCs to History and updates the timestamp. Called by menu or trigger.
  */
-function refreshAllBeatmaps() {
+function refreshAllBeatmaps(startIndex = 0) {
   const lastRow = DATA_SHEET.getLastRow();
   const rowCount = lastRow - OUTPUT_ROW_NUM + 1;
   const beatmapIDs = DATA_SHEET.getRange(
@@ -292,7 +296,11 @@ function refreshAllBeatmaps() {
   ).getValues();
 
   const jobs = [];
-  for (let i = 0; i < beatmapIDs.length; i++) {
+  for (
+    let i = startIndex;
+    i < beatmapIDs.length && i < startIndex + REFRESH_CHUNK_SIZE;
+    i++
+  ) {
     const beatmapID = String(beatmapIDs[i][0]);
     if (
       beatmapID &&
@@ -304,12 +312,34 @@ function refreshAllBeatmaps() {
     }
   }
 
-  processBeatmapJobs(jobs);
-  moveFCsToHistory();
-  updateLastUpdatedTimestamp();
-  showMessage(
-    `Refresh all beatmaps complete! Refreshed ${jobs.length} beatmaps.`
-  );
+  if (jobs.length > 0) {
+    processBeatmapJobs(jobs);
+  }
+
+  const nextStartIndex = startIndex + REFRESH_CHUNK_SIZE;
+  if (nextStartIndex < beatmapIDs.length) {
+    // Schedule next chunk
+    ScriptApp.newTrigger("refreshAllBeatmaps")
+      .timeBased()
+      .after(CHUNK_DELAY) // Delay before next chunk
+      .create();
+    // Store next start index in script properties
+    PropertiesService.getScriptProperties().setProperty(
+      "refreshStartIndex",
+      nextStartIndex.toString()
+    );
+    showMessage(
+      `Processed ${jobs.length} beatmaps. Continuing with next chunk...`
+    );
+  } else {
+    // Finished all chunks
+    PropertiesService.getScriptProperties().deleteProperty("refreshStartIndex");
+    moveFCsToHistory();
+    updateLastUpdatedTimestamp();
+    showMessage(
+      `Refresh all beatmaps complete! Processed ${beatmapIDs.length} beatmaps.`
+    );
+  }
 }
 
 /**
@@ -617,20 +647,18 @@ function updateLastUpdatedTimestamp() {
 }
 
 /**
- * Processes beatmap jobs in batches of 15 with 3.5-second pauses between batches for rate limiting
+ * Processes beatmap jobs in batches with pauses between batches for rate limiting
  * @param {Array} jobs - Array of job objects with {row, id, beatmapData?, addInputURL?}
  */
 function processBeatmapJobs(jobs) {
-  const BATCH_SIZE = 15;
-  const PAUSE_MS = 4000;
   const allRowData = [];
   const allInputURLs = [];
   const rowNumbers = [];
   const beatmapApiTemplate = `https://osu.ppy.sh/api/get_beatmaps?k=${OSU_API_KEY}&b=`;
   const scoresApiTemplate = `https://osu.ppy.sh/api/get_scores?k=${OSU_API_KEY}&b=`;
 
-  for (let offset = 0; offset < jobs.length; offset += BATCH_SIZE) {
-    const batch = jobs.slice(offset, offset + BATCH_SIZE);
+  for (let offset = 0; offset < jobs.length; offset += API_BATCH_SIZE) {
+    const batch = jobs.slice(offset, offset + API_BATCH_SIZE);
     // Create beatmap API calls only for jobs that don't have beatmap data
     const bmCalls = batch
       .filter((job) => !job.beatmapData)
@@ -650,7 +678,7 @@ function processBeatmapJobs(jobs) {
       bmRes = bmCalls.length > 0 ? UrlFetchApp.fetchAll(bmCalls) : [];
       scRes = scCalls.length > 0 ? UrlFetchApp.fetchAll(scCalls) : [];
     } catch (error) {
-      const batchNumber = Math.floor(offset / BATCH_SIZE) + 1;
+      const batchNumber = Math.floor(offset / API_BATCH_SIZE) + 1;
       const beatmapNumber = offset + 1;
       showMessage(
         `Error fetching beatmap data for beatmap #${beatmapNumber} (ID: ${batch[0].id}) (batch ${batchNumber})`
@@ -680,7 +708,7 @@ function processBeatmapJobs(jobs) {
       if (!job.beatmapData) bmIndex++;
       if (!job.scores) scIndex++;
     });
-    Utilities.sleep(PAUSE_MS);
+    Utilities.sleep(API_BATCH_PAUSE);
   }
 
   if (allRowData.length > 0) {
