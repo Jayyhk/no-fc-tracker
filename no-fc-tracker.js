@@ -205,6 +205,7 @@ function onOpen() {
     .addItem("Remove Daily Auto-Refresh", "removeDailyTrigger")
     .addSeparator()
     .addItem("Refresh All Beatmaps", "refreshAllBeatmaps")
+    .addItem("Cancel Ongoing Refresh", "cancelOngoingRefresh")
     .addItem("Add New Ranked Beatmaps", "addNewRankedBeatmaps")
     .addItem("Move All FCs to History", "moveFCsToHistory")
     .addItem("Move Row to History", "moveRowToHistoryManual")
@@ -256,6 +257,39 @@ function removeDailyTrigger() {
 }
 
 /**
+ * Deletes all pending refreshAllBeatmaps triggers (used for cleanup)
+ */
+function deleteRefreshAllBeatmapsTriggers() {
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach((trigger) => {
+    if (trigger.getHandlerFunction() === "refreshAllBeatmaps") {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+}
+
+/**
+ * Cancels an ongoing refresh operation by deleting triggers and clearing stored state
+ */
+function cancelOngoingRefresh() {
+  deleteRefreshAllBeatmapsTriggers();
+  const scriptProps = PropertiesService.getScriptProperties();
+  const storedIndex = scriptProps.getProperty("refreshStartIndex");
+  scriptProps.deleteProperty("refreshStartIndex");
+  scriptProps.deleteProperty("refreshTotalCount");
+
+  if (storedIndex !== null) {
+    showMessage(
+      `Cancelled ongoing refresh operation. Was processing beatmap ${
+        parseInt(storedIndex) + 1
+      }.`
+    );
+  } else {
+    showMessage("No ongoing refresh operation found.");
+  }
+}
+
+/**
  * Triggers when a cell is edited - processes beatmap data automatically
  * @param {Object} e - The event object
  */
@@ -285,22 +319,47 @@ function setBeatmapDataOnEdit(e) {
  * Processes in chunks to avoid timeout.
  * Also moves any FCs to History and updates the timestamp. Called by menu or trigger.
  */
-function refreshAllBeatmaps(startIndex = 0) {
-  const lastRow = DATA_SHEET.getLastRow();
-  const rowCount = lastRow - OUTPUT_ROW_NUM + 1;
+function refreshAllBeatmaps() {
+  const scriptProps = PropertiesService.getScriptProperties();
+
+  // Read the stored start index if this is a continuation, otherwise start from 0
+  let startIndex = 0;
+  let totalBeatmapCount = 0;
+  const storedIndex = scriptProps.getProperty("refreshStartIndex");
+  const storedTotal = scriptProps.getProperty("refreshTotalCount");
+
+  if (storedIndex !== null && storedTotal !== null) {
+    // This is a continuation - use stored values
+    startIndex = parseInt(storedIndex);
+    totalBeatmapCount = parseInt(storedTotal);
+  } else {
+    // This is the first chunk - determine total count
+    const lastRow = DATA_SHEET.getLastRow();
+    totalBeatmapCount = lastRow - OUTPUT_ROW_NUM + 1;
+
+    // Handle empty sheet edge case
+    if (totalBeatmapCount <= 0) {
+      showMessage("No beatmaps found to refresh.");
+      return;
+    }
+
+    scriptProps.setProperty("refreshTotalCount", totalBeatmapCount.toString());
+  }
+
+  // Read only the chunk we need (not the entire sheet every time)
+  const chunkSize = Math.min(
+    REFRESH_CHUNK_SIZE,
+    totalBeatmapCount - startIndex
+  );
   const beatmapIDs = DATA_SHEET.getRange(
-    OUTPUT_ROW_NUM,
+    OUTPUT_ROW_NUM + startIndex,
     OUTPUT_COL_NUM + 10, // Column K
-    rowCount,
+    chunkSize,
     1
   ).getValues();
 
   const jobs = [];
-  for (
-    let i = startIndex;
-    i < beatmapIDs.length && i < startIndex + REFRESH_CHUNK_SIZE;
-    i++
-  ) {
+  for (let i = 0; i < beatmapIDs.length; i++) {
     const beatmapID = String(beatmapIDs[i][0]);
     if (
       beatmapID &&
@@ -308,7 +367,7 @@ function refreshAllBeatmaps(startIndex = 0) {
       beatmapID !== "undefined" &&
       beatmapID !== "null"
     ) {
-      jobs.push({ row: OUTPUT_ROW_NUM + i, id: beatmapID });
+      jobs.push({ row: OUTPUT_ROW_NUM + startIndex + i, id: beatmapID });
     }
   }
 
@@ -317,27 +376,34 @@ function refreshAllBeatmaps(startIndex = 0) {
   }
 
   const nextStartIndex = startIndex + REFRESH_CHUNK_SIZE;
-  if (nextStartIndex < beatmapIDs.length) {
+  if (nextStartIndex < totalBeatmapCount) {
+    // Store next start index in script properties for the next execution
+    scriptProps.setProperty("refreshStartIndex", nextStartIndex.toString());
+
     // Schedule next chunk
     ScriptApp.newTrigger("refreshAllBeatmaps")
       .timeBased()
       .after(CHUNK_DELAY) // Delay before next chunk
       .create();
-    // Store next start index in script properties
-    PropertiesService.getScriptProperties().setProperty(
-      "refreshStartIndex",
-      nextStartIndex.toString()
-    );
-    showMessage(
-      `Processed ${jobs.length} beatmaps. Continuing with next chunk...`
+
+    console.log(
+      `Processed ${jobs.length} beatmaps (${startIndex + 1}-${Math.min(
+        nextStartIndex,
+        totalBeatmapCount
+      )} of ${totalBeatmapCount}). Continuing with next chunk...`
     );
   } else {
-    // Finished all chunks
-    PropertiesService.getScriptProperties().deleteProperty("refreshStartIndex");
+    // Finished all chunks - clean up and finalize
+    scriptProps.deleteProperty("refreshStartIndex");
+    scriptProps.deleteProperty("refreshTotalCount");
+
+    // Delete any leftover triggers to avoid duplicates
+    deleteRefreshAllBeatmapsTriggers();
+
     moveFCsToHistory();
     updateLastUpdatedTimestamp();
     showMessage(
-      `Refresh all beatmaps complete! Processed ${beatmapIDs.length} beatmaps.`
+      `Refresh all beatmaps complete! Processed ${totalBeatmapCount} beatmaps.`
     );
   }
 }
