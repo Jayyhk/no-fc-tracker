@@ -201,8 +201,8 @@ function getModEnum(modString) {
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("osu-Tools")
-    .addItem("Setup Daily Triggers", "setupDailyTrigger")
-    .addItem("Remove Daily Triggers", "removeDailyTriggers")
+    .addItem("Set up Daily Triggers", "setUpDailyTrigger")
+    .addItem("Delete Daily Triggers", "deleteDailyTriggers")
     .addSeparator()
     .addItem("Refresh All Beatmaps", "refreshAllBeatmaps")
     .addItem("Cancel Ongoing Refresh", "cancelOngoingRefresh")
@@ -214,14 +214,14 @@ function onOpen() {
 }
 
 /**
- * Sets up daily triggers: refresh at 11:00 PM, add new beatmaps at 12:00 AM EST/EDT
+ * Sets up daily triggers: refresh at 10:00 PM, add new beatmaps at 12:00 AM EST/EDT
  */
-function setupDailyTrigger() {
-  removeDailyTriggers();
+function setUpDailyTrigger() {
+  deleteDailyTriggers();
   ScriptApp.newTrigger("refreshAllBeatmapsDaily")
     .timeBased()
     .everyDays(1)
-    .atHour(23) // 11:00 PM
+    .atHour(22) // 10:00 PM
     .inTimezone("America/New_York") // EST/EDT timezone
     .create();
   ScriptApp.newTrigger("addNewRankedBeatmaps")
@@ -231,18 +231,18 @@ function setupDailyTrigger() {
     .inTimezone("America/New_York") // EST/EDT timezone
     .create();
   showMessage(
-    "Daily auto-refresh has been set up with two triggers:\n\n" +
-      "• 11:00 PM EST/EDT: Refresh existing beatmaps\n" +
+    "Two daily triggers have been set up:\n\n" +
+      "• 10:00 PM EST/EDT: Refresh existing beatmaps\n" +
       "• 12:00 AM EST/EDT: Add new ranked beatmaps"
   );
 }
 
 /**
- * Removes all triggers for the daily auto-refresh functions
+ * Removes all triggers for the daily functions
  */
-function removeDailyTriggers() {
+function deleteDailyTriggers() {
   const triggers = ScriptApp.getProjectTriggers();
-  let removedCount = 0;
+  let deletedCount = 0;
   triggers.forEach((trigger) => {
     const handlerFunction = trigger.getHandlerFunction();
     if (
@@ -250,20 +250,11 @@ function removeDailyTriggers() {
       handlerFunction === "addNewRankedBeatmaps"
     ) {
       ScriptApp.deleteTrigger(trigger);
-      removedCount++;
+      deletedCount++;
     }
   });
-  const noun = removedCount === 1 ? "trigger" : "triggers";
-  showMessage(`Removed ${removedCount} daily auto-refresh ${noun}.`);
-}
-
-/**
- * Wrapper for daily trigger to call the chunked refresher without being deleted.
- * The script deletes triggers named "refreshAllBeatmaps" when finishing chunks,
- * so the daily trigger uses this wrapper to remain persistent.
- */
-function refreshAllBeatmapsDaily() {
-  refreshAllBeatmaps();
+  const noun = deletedCount === 1 ? "trigger" : "triggers";
+  showMessage(`Deleted ${deletedCount} daily ${noun}.`);
 }
 
 /**
@@ -322,6 +313,15 @@ function setBeatmapDataOnEdit(e) {
     updateSpreadsheetRow(r);
   }
   sortBeatmapData();
+}
+
+/**
+ * Wrapper for daily trigger to call the chunked refresher without being deleted.
+ * The script deletes triggers named "refreshAllBeatmaps" when finishing chunks,
+ * so the daily trigger uses this wrapper to remain persistent.
+ */
+function refreshAllBeatmapsDaily() {
+  refreshAllBeatmaps();
 }
 
 /**
@@ -1221,6 +1221,32 @@ function applyHistoryRowFormatting(rowNumber) {
 }
 
 /**
+ * Bulk sets multiple rows of data and applies formatting efficiently
+ * @param {Array} rowNumbers - Array of row numbers to update
+ * @param {Array} allRowData - Array of row data arrays
+ */
+function setBulkRowData(rowNumbers, allRowData) {
+  if (rowNumbers.length === 0 || allRowData.length === 0) return;
+  for (let i = 0; i < rowNumbers.length; i++) {
+    const row = rowNumbers[i];
+    const data = allRowData[i];
+    DATA_SHEET.getRange(row, OUTPUT_COL_NUM, 1, data.length).setValues([data]);
+    applyRowFormatting(row);
+  }
+}
+
+/**
+ * Bulk sets input URLs for multiple rows
+ * @param {Array} inputURLs - Array of {row, url} objects
+ */
+function setBulkInputURLs(inputURLs) {
+  if (inputURLs.length === 0) return;
+  inputURLs.forEach((item) => {
+    DATA_SHEET.getRange(item.row, INPUT_COL_NUM, 1, 1).setValue(item.url);
+  });
+}
+
+/**
  * Sorts beatmap data by star rating (ascending)
  */
 function sortBeatmapData() {
@@ -1264,30 +1290,4 @@ function sortHistoryManual() {
   showMessage(
     "History sheet has been sorted by score date, then by star rating (both oldest/lowest to newest/highest)."
   );
-}
-
-/**
- * Bulk sets multiple rows of data and applies formatting efficiently
- * @param {Array} rowNumbers - Array of row numbers to update
- * @param {Array} allRowData - Array of row data arrays
- */
-function setBulkRowData(rowNumbers, allRowData) {
-  if (rowNumbers.length === 0 || allRowData.length === 0) return;
-  for (let i = 0; i < rowNumbers.length; i++) {
-    const row = rowNumbers[i];
-    const data = allRowData[i];
-    DATA_SHEET.getRange(row, OUTPUT_COL_NUM, 1, data.length).setValues([data]);
-    applyRowFormatting(row);
-  }
-}
-
-/**
- * Bulk sets input URLs for multiple rows
- * @param {Array} inputURLs - Array of {row, url} objects
- */
-function setBulkInputURLs(inputURLs) {
-  if (inputURLs.length === 0) return;
-  inputURLs.forEach((item) => {
-    DATA_SHEET.getRange(item.row, INPUT_COL_NUM, 1, 1).setValue(item.url);
-  });
 }
