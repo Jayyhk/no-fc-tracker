@@ -201,8 +201,8 @@ function getModEnum(modString) {
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("osu-Tools")
-    .addItem("Setup Daily Auto-Refresh", "setupDailyTrigger")
-    .addItem("Remove Daily Auto-Refresh", "removeDailyTrigger")
+    .addItem("Setup Daily Triggers", "setupDailyTrigger")
+    .addItem("Remove Daily Triggers", "removeDailyTriggers")
     .addSeparator()
     .addItem("Refresh All Beatmaps", "refreshAllBeatmaps")
     .addItem("Cancel Ongoing Refresh", "cancelOngoingRefresh")
@@ -217,8 +217,8 @@ function onOpen() {
  * Sets up daily triggers: refresh at 11:00 PM, add new beatmaps at 12:00 AM EST/EDT
  */
 function setupDailyTrigger() {
-  removeDailyTrigger();
-  ScriptApp.newTrigger("refreshAllBeatmaps")
+  removeDailyTriggers();
+  ScriptApp.newTrigger("refreshAllBeatmapsDaily")
     .timeBased()
     .everyDays(1)
     .atHour(23) // 11:00 PM
@@ -240,20 +240,30 @@ function setupDailyTrigger() {
 /**
  * Removes all triggers for the daily auto-refresh functions
  */
-function removeDailyTrigger() {
+function removeDailyTriggers() {
   const triggers = ScriptApp.getProjectTriggers();
   let removedCount = 0;
   triggers.forEach((trigger) => {
     const handlerFunction = trigger.getHandlerFunction();
     if (
-      handlerFunction === "refreshAllBeatmaps" ||
+      handlerFunction === "refreshAllBeatmapsDaily" ||
       handlerFunction === "addNewRankedBeatmaps"
     ) {
       ScriptApp.deleteTrigger(trigger);
       removedCount++;
     }
   });
-  showMessage(`Removed ${removedCount} daily auto-refresh trigger(s).`);
+  const noun = removedCount === 1 ? "trigger" : "triggers";
+  showMessage(`Removed ${removedCount} daily auto-refresh ${noun}.`);
+}
+
+/**
+ * Wrapper for daily trigger to call the chunked refresher without being deleted.
+ * The script deletes triggers named "refreshAllBeatmaps" when finishing chunks,
+ * so the daily trigger uses this wrapper to remain persistent.
+ */
+function refreshAllBeatmapsDaily() {
+  refreshAllBeatmaps();
 }
 
 /**
