@@ -2,10 +2,10 @@ const SPREADSHEET = SpreadsheetApp.getActiveSpreadsheet();
 const DATA_SHEET = SPREADSHEET.getSheetByName("Data");
 const HISTORY_SHEET = SPREADSHEET.getSheetByName("History");
 const ABOUT_SHEET = SPREADSHEET.getSheetByName("About");
-const INPUT_COL_NUM = letterToColumn("V"); // Column to input beatmap links
+const INPUT_COL_NUM = letterToColumn("W"); // Column to input beatmap links
 const OUTPUT_COL_NUM = letterToColumn("A"); // Column to start outputting beatmap info
 const OUTPUT_ROW_NUM = 2; // Row to start outputting beatmap info
-const NUM_OUTPUT_COLS = 21; // Number of columns to return
+const NUM_OUTPUT_COLS = 22; // Number of columns to return
 const LAST_UPDATED_RANGE = "B18:G19"; // Cell range for "Last Updated" timestamp in About sheet
 const RATE_LIMIT_DELAY = 250; // API rate limiting delay in ms
 const REFRESH_CHUNK_SIZE = 100; // Number of beatmaps to process per execution chunk
@@ -653,7 +653,7 @@ function moveRowToHistory(rowNumber) {
     return false;
   }
 
-  const columnsToMove = NUM_OUTPUT_COLS - 1; // Exclude percent FC column (column U)
+  const columnsToMove = NUM_OUTPUT_COLS - 2; // Exclude ambiguous FC and percent FC columns
   const formulas = DATA_SHEET.getRange(
     rowNumber,
     OUTPUT_COL_NUM,
@@ -936,7 +936,7 @@ function fetchBeatmapData(beatmapID) {
 }
 
 /**
- * Finds the best score from the first 50 scores with valid mods
+ * Finds the best score from the first 50 scores
  * Priority: 1) Any FC (exits immediately), 2) Highest combo, 3) Best rank when combo tied
  * @param {Array} scores - Array of score objects
  * @param {number} maxCombo - Maximum combo for the beatmap
@@ -1152,6 +1152,7 @@ function createBeatmapRow(beatmapData, scores) {
     bestScore.modString,
     bestScore.currentMaxCombo,
     maxCombo,
+    bestScore.isAmbiguousFC ? "✓" : "",
     bestScore.percentFC,
   ];
 }
@@ -1214,7 +1215,7 @@ function applyRowFormatting(rowNumber) {
     ar: 6,
     od: 7,
     hp: 8,
-    percentFC: 20,
+    percentFC: 21,
   };
 
   DATA_SHEET.getRange(
@@ -1312,7 +1313,7 @@ function sortHistory() {
     2, // Start from row 2 (assuming row 1 is header)
     1, // Start from column 1
     lastRow - 1, // Number of rows to include
-    NUM_OUTPUT_COLS - 1 // Number of columns (excluding the last column we don't move)
+    NUM_OUTPUT_COLS - 2 // Number of columns to sort (exclude ambiguous FC and percent FC columns)
   );
 
   sortRange.sort([
