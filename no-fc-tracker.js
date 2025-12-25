@@ -1028,6 +1028,17 @@ function getRankValue(rank) {
 }
 
 /**
+ * Checks if a rank is valid (S, SH, X, XH)
+ * @param {Object} score - Score object from API (with rank)
+ * @returns {boolean} True if rank is valid
+ */
+function isRankValid(score) {
+  if (!score) return false;
+
+  return ["S", "SH", "X", "XH"].includes(score.rank);
+}
+
+/**
  * Checks if mod combination is valid (no invalid mods)
  * @param {number} modsEnum - Bitwise mod flags
  * @returns {boolean} True if mod combination is valid
@@ -1045,23 +1056,47 @@ function areModsValid(modsEnum) {
 function isFC(score, maxCombo) {
   if (!score) return false;
 
-  const rank = score.rank;
-  const hasValidRank =
-    rank === "S" || rank === "SH" || rank === "X" || rank === "XH";
+  const hasValidRank = isRankValid(score);
   if (!hasValidRank) return false;
 
   const modsEnum = parseInt(score.enabled_mods);
   const hasValidMods = areModsValid(modsEnum);
   const hasSD = (modsEnum & 32) !== 0; // SD
   const hasPF = (modsEnum & 16384) !== 0; // PF
-  if ((hasSD || hasPF) && hasValidMods) {
+  if (hasValidMods && (hasSD || hasPF)) {
     return true;
   }
 
   const combo = parseInt(score.maxcombo);
   const hasHighCombo = combo >= maxCombo - 1; // maxcombo - 1 is an fc unless a sliderbreak occurs on the first note which must be a slider (extremely unlikely)
 
-  return hasValidRank && hasHighCombo && hasValidMods;
+  return hasValidRank && hasValidMods && hasHighCombo;
+}
+
+/**
+ * Checks if a score is an ambiguous FC (combo + 100s >= max_combo)
+ * @param {Object} score - Score object from API (with rank, maxcombo, enabled_mods, count100)
+ * @param {number} maxCombo - Maximum combo for the beatmap
+ * @returns {boolean} True if the score is an ambiguous FC
+ */
+function isAmbiguousFC(score, maxCombo) {
+  if (!score) return false;
+
+  const hasValidRank = isRankValid(score);
+  if (!hasValidRank) return false;
+
+  const modsEnum = parseInt(score.enabled_mods);
+  const hasValidMods = areModsValid(modsEnum);
+  const hasSD = (modsEnum & 32) !== 0; // SD
+  const hasPF = (modsEnum & 16384) !== 0; // PF
+  if (!hasValidMods || hasSD || hasPF) {
+    return false;
+  }
+
+  const combo = parseInt(score.maxcombo);
+  const count100 = parseInt(score.count100);
+
+  return combo + count100 >= maxCombo; // heuristic: 100s covering the missing combo might be an FC
 }
 
 /**
