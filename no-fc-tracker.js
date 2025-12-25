@@ -12,7 +12,7 @@ const REFRESH_CHUNK_SIZE = 100; // Number of beatmaps to process per execution c
 const CHUNK_DELAY = 1000; // Delay before triggering next execution chunk in ms
 const BATCH_SIZE = 15; // Number of API calls per batch within a chunk
 const BATCH_PAUSE = 4000; // Pause between API batches in ms
-const ALLOWED_MODS = {
+const VALID_MODS = {
   0: "NM",
   1: "NF",
   2: "EZ",
@@ -27,7 +27,7 @@ const ALLOWED_MODS = {
   4096: "SO",
   16384: "PF",
 };
-const DISALLOWED_MODS = 2 | 4 | 256 | 4096; // EZ | TD | HT | SO
+const INVALID_MODS = 2 | 4 | 256 | 4096; // EZ | TD | HT | SO
 const RANK_VALUE_MAP = new Map([
   ["D", 1],
   ["C", 2],
@@ -162,13 +162,13 @@ function getModString(modsEnum) {
   if (modsEnum & 512) modsEnum &= ~64; // If NC present, drop DT bit (512 = NC, 64 = DT)
   if (modsEnum & 16384) modsEnum &= ~32; // If PF present, drop SD bit (16384 = PF, 32 = SD)
   let modString = "";
-  const modFlags = Object.keys(ALLOWED_MODS)
+  const modFlags = Object.keys(VALID_MODS)
     .map(Number)
     .filter((flag) => flag > 0)
     .sort((a, b) => a - b);
   for (const modFlag of modFlags) {
     if (modsEnum & modFlag) {
-      modString += ALLOWED_MODS[modFlag];
+      modString += VALID_MODS[modFlag];
     }
   }
 
@@ -184,7 +184,7 @@ function getModEnum(modString) {
   if (modString === "NM" || modString === "") return 0;
   let modsEnum = 0;
   const modMap = Object.fromEntries(
-    Object.entries(ALLOWED_MODS).map(([k, v]) => [v, parseInt(k)])
+    Object.entries(VALID_MODS).map(([k, v]) => [v, parseInt(k)])
   );
   for (let i = 0; i < modString.length; i += 2) {
     const mod = modString.substr(i, 2);
@@ -936,7 +936,7 @@ function fetchBeatmapData(beatmapID) {
 }
 
 /**
- * Finds the best score from the first 50 scores with allowed mods
+ * Finds the best score from the first 50 scores with valid mods
  * Priority: 1) Any FC (exits immediately), 2) Highest combo, 3) Best rank when combo tied
  * @param {Array} scores - Array of score objects
  * @param {number} maxCombo - Maximum combo for the beatmap
@@ -956,7 +956,7 @@ function findBestScore(scores, maxCombo) {
     const combo = parseInt(score.maxcombo);
     const modsEnum = parseInt(score.enabled_mods);
 
-    if (isModAllowed(modsEnum)) {
+    if (areModsValid(modsEnum)) {
       if (isFC(score, maxCombo)) {
         bestUserID = parseInt(score.user_id);
         bestUsername = score.username;
@@ -1028,12 +1028,12 @@ function getRankValue(rank) {
 }
 
 /**
- * Checks if mod combination is allowed (no disallowed mods)
+ * Checks if mod combination is valid (no invalid mods)
  * @param {number} modsEnum - Bitwise mod flags
- * @returns {boolean} True if mod combination is allowed
+ * @returns {boolean} True if mod combination is valid
  */
-function isModAllowed(modsEnum) {
-  return (modsEnum & DISALLOWED_MODS) === 0;
+function areModsValid(modsEnum) {
+  return (modsEnum & INVALID_MODS) === 0;
 }
 
 /**
@@ -1051,17 +1051,17 @@ function isFC(score, maxCombo) {
   if (!hasValidRank) return false;
 
   const modsEnum = parseInt(score.enabled_mods);
-  const hasAllowedMods = isModAllowed(modsEnum);
+  const hasValidMods = areModsValid(modsEnum);
   const hasSD = (modsEnum & 32) !== 0; // SD
   const hasPF = (modsEnum & 16384) !== 0; // PF
-  if ((hasSD || hasPF) && hasAllowedMods) {
+  if ((hasSD || hasPF) && hasValidMods) {
     return true;
   }
 
   const combo = parseInt(score.maxcombo);
   const hasHighCombo = combo >= maxCombo - 1; // maxcombo - 1 is an fc unless a sliderbreak occurs on the first note which must be a slider (extremely unlikely)
 
-  return hasValidRank && hasHighCombo && hasAllowedMods;
+  return hasValidRank && hasHighCombo && hasValidMods;
 }
 
 /**
