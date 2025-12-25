@@ -949,6 +949,7 @@ function findBestScore(scores, maxCombo) {
   let bestCombo = 0;
   let bestRank = "";
   let bestDate = "";
+  let bestIsAmbiguousFC = false;
 
   const scoreLimit = Math.min(scores.length, 50);
   for (let i = 0; i < scoreLimit; i++) {
@@ -964,6 +965,7 @@ function findBestScore(scores, maxCombo) {
         bestCombo = combo;
         bestRank = score.rank;
         bestDate = score.date;
+        bestIsAmbiguousFC = false;
         break;
       }
 
@@ -979,6 +981,7 @@ function findBestScore(scores, maxCombo) {
         bestCombo = combo;
         bestRank = score.rank;
         bestDate = score.date;
+        bestIsAmbiguousFC = isAmbiguousFC(score, maxCombo);
       }
     }
   }
@@ -993,6 +996,7 @@ function findBestScore(scores, maxCombo) {
     rank: bestRank,
     scoreDate: bestDate ? formatDate(bestDate) : "",
     percentFC: percentFC,
+    isAmbiguousFC: bestIsAmbiguousFC,
   };
 }
 
