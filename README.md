@@ -10,4 +10,4 @@ This is a Google Apps Script that tracks all osu!standard beatmaps without a Ful
 > **Invalid mods:** EZ, TD, HT, SO
 
 > [!CAUTION]
-> Scores that do not obtain a combo `>= max_combo - 1` will not be removed, as a sliderbreak may have occurred. Even though these scores may be FCs, we assume the worst case scenario to prevent false positives. These scores must be manually reviewed and/or removed.
+> Scores that do not obtain a combo `>= max_combo - 1` will not be removed, as a sliderbreak may have occurred. Even though these scores may be FCs, we assume the worst case scenario to prevent false positives. These scores must be manually reviewed and removed if it is determined that they are indeed FCs.
