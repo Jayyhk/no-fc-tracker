@@ -653,7 +653,7 @@ function moveRowToHistory(rowNumber) {
     return false;
   }
 
-  const columnsToMove = NUM_OUTPUT_COLS - 2; // Exclude ambiguous FC and percent FC columns
+  const columnsToMove = NUM_OUTPUT_COLS - 2; // Exclude percent FC and ambiguous FC columns
   const formulas = DATA_SHEET.getRange(
     rowNumber,
     OUTPUT_COL_NUM,
@@ -1152,8 +1152,8 @@ function createBeatmapRow(beatmapData, scores) {
     bestScore.modString,
     bestScore.currentMaxCombo,
     maxCombo,
-    bestScore.isAmbiguousFC ? "✓" : "",
     bestScore.percentFC,
+    bestScore.isAmbiguousFC ? "✓" : "",
   ];
 }
 
@@ -1215,7 +1215,7 @@ function applyRowFormatting(rowNumber) {
     ar: 6,
     od: 7,
     hp: 8,
-    percentFC: 21,
+    percentFC: 20,
   };
 
   DATA_SHEET.getRange(
@@ -1313,7 +1313,7 @@ function sortHistory() {
     2, // Start from row 2 (assuming row 1 is header)
     1, // Start from column 1
     lastRow - 1, // Number of rows to include
-    NUM_OUTPUT_COLS - 2 // Number of columns to sort (exclude ambiguous FC and percent FC columns)
+    NUM_OUTPUT_COLS - 2 // Number of columns to sort (exclude percent FC and ambiguous FC columns)
   );
 
   sortRange.sort([
