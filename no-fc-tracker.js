@@ -825,12 +825,12 @@ function requestContent(url) {
     if (responseCode !== 200) {
       throw new Error(`HTTP ${responseCode}: ${response.getContentText()}`);
     }
-    const content = response.getContentText("UTF-8");
-    Utilities.sleep(RATE_LIMIT_DELAY);
-    return content;
+    return response.getContentText("UTF-8");
   } catch (error) {
     showMessage(`API request failed for ${url}: ${error.message}`);
     throw error;
+  } finally {
+    Utilities.sleep(RATE_LIMIT_DELAY);
   }
 }
 
