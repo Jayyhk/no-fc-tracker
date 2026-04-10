@@ -7,11 +7,9 @@ const OUTPUT_COL_NUM = letterToColumn("A"); // Column to start outputting beatma
 const OUTPUT_ROW_NUM = 2; // Row to start outputting beatmap info
 const NUM_OUTPUT_COLS = 22; // Number of columns to return
 const LAST_UPDATED_RANGE = "B23:G24"; // Cell range for "Last Updated" timestamp in About sheet
-const RATE_LIMIT_DELAY = 250; // API rate limiting delay in ms
+const RATE_LIMIT_DELAY = 1000; // API rate limiting delay in ms
 const REFRESH_CHUNK_SIZE = 100; // Number of beatmaps to process per execution chunk
 const CHUNK_DELAY = 1000; // Delay before triggering next execution chunk in ms
-const BATCH_SIZE = 15; // Number of API calls per batch within a chunk
-const BATCH_PAUSE = 4000; // Pause between API batches in ms
 const VALID_MODS = {
   0: "NM",
   1: "NF",
@@ -723,8 +721,8 @@ function updateLastUpdatedTimestamp() {
 }
 
 /**
- * Processes beatmap jobs in batches with pauses between batches for rate limiting
- * @param {Array} jobs - Array of job objects with {row, id, beatmapData?, addInputURL?}
+ * Processes beatmap jobs sequentially with 1000ms delay between API calls for rate limiting.
+ * @param {Array} jobs - Array of job objects with {row, id, beatmapData?, scores?, addInputURL?}
  */
 function processBeatmapJobs(jobs) {
   const allRowData = [];
@@ -733,58 +731,42 @@ function processBeatmapJobs(jobs) {
   const beatmapApiTemplate = `https://osu.ppy.sh/api/get_beatmaps?k=${OSU_API_KEY}&b=`;
   const scoresApiTemplate = `https://osu.ppy.sh/api/get_scores?k=${OSU_API_KEY}&b=`;
 
-  for (let offset = 0; offset < jobs.length; offset += BATCH_SIZE) {
-    const batch = jobs.slice(offset, offset + BATCH_SIZE);
-    // Create beatmap API calls only for jobs that don't have beatmap data
-    const bmCalls = batch
-      .filter((job) => !job.beatmapData)
-      .map((job) => ({
-        url: beatmapApiTemplate + job.id,
-      }));
-    // Create score API calls only for jobs that don't have scores
-    const scCalls = batch
-      .filter((job) => !job.scores)
-      .map((job) => ({
-        url: scoresApiTemplate + job.id,
-      }));
+  for (const job of jobs) {
+    let beatmapData = job.beatmapData;
+    let scores = job.scores || [];
 
-    let bmRes = [];
-    let scRes = [];
-    try {
-      bmRes = bmCalls.length > 0 ? UrlFetchApp.fetchAll(bmCalls) : [];
-      scRes = scCalls.length > 0 ? UrlFetchApp.fetchAll(scCalls) : [];
-    } catch (error) {
-      const batchNumber = Math.floor(offset / BATCH_SIZE) + 1;
-      const beatmapNumber = offset + 1;
-      showMessage(
-        `Error fetching beatmap data for beatmap #${beatmapNumber} (ID: ${batch[0].id}) (batch ${batchNumber})`
-      );
-      showMessage(`Error details: ${error}`);
-      throw error; // Re-throw to terminate execution
+    if (!beatmapData) {
+      try {
+        beatmapData = JSON.parse(requestContent(beatmapApiTemplate + job.id))[0];
+      } catch (error) {
+        allRowData.push(createErrorRow("API Error: " + error.message)[0]);
+        rowNumbers.push(job.row);
+        continue;
+      }
+      if (!beatmapData) {
+        allRowData.push(createErrorRow("Invalid beatmap ID")[0]);
+        rowNumbers.push(job.row);
+        continue;
+      }
     }
 
-    let bmIndex = 0;
-    let scIndex = 0;
-    batch.forEach((job) => {
-      const result = processBeatmapJobForBulk(
-        job,
-        bmRes,
-        scRes,
-        bmIndex,
-        scIndex
-      );
-      if (result) {
-        allRowData.push(result.rowData);
-        rowNumbers.push(job.row);
-        if (result.inputURL) {
-          allInputURLs.push({ row: job.row, url: result.inputURL });
-        }
+    if (!job.scores) {
+      try {
+        scores = JSON.parse(requestContent(scoresApiTemplate + job.id)) || [];
+      } catch (error) {
+        showMessage("Could not fetch scores for beatmap " + job.id);
       }
-      // Increment indices only for jobs that made API calls
-      if (!job.beatmapData) bmIndex++;
-      if (!job.scores) scIndex++;
-    });
-    Utilities.sleep(BATCH_PAUSE);
+    }
+
+    allRowData.push(createBeatmapRow(beatmapData, scores));
+    rowNumbers.push(job.row);
+
+    if (job.addInputURL && beatmapData) {
+      allInputURLs.push({
+        row: job.row,
+        url: `https://osu.ppy.sh/beatmapsets/${beatmapData.beatmapset_id}#osu/${beatmapData.beatmap_id}`,
+      });
+    }
   }
 
   if (allRowData.length > 0) {
@@ -793,46 +775,6 @@ function processBeatmapJobs(jobs) {
   if (allInputURLs.length > 0) {
     setBulkInputURLs(allInputURLs);
   }
-}
-
-/**
- * Processes a single beatmap job for bulk operations: returns data instead of immediately writing
- * @param {Object} job - Job object with {row, id, beatmapData?, scores?, addInputURL?}
- * @param {Array} bmRes - Beatmap API responses
- * @param {Array} scRes - Scores API responses
- * @param {number} bmIndex - Index for beatmap response
- * @param {number} scIndex - Index for scores response
- * @returns {Object|null} Result object with rowData and optional inputURL
- */
-function processBeatmapJobForBulk(job, bmRes, scRes, bmIndex, scIndex) {
-  let beatmapData = job.beatmapData;
-  let scores = job.scores || [];
-
-  if (!beatmapData) {
-    try {
-      beatmapData = JSON.parse(bmRes[bmIndex].getContentText("UTF-8"))[0];
-    } catch (error) {
-      return { rowData: createErrorRow("API Error: " + error.message)[0] };
-    }
-    if (!beatmapData) {
-      return { rowData: createErrorRow("Invalid beatmap ID")[0] };
-    }
-  }
-  if (!job.scores) {
-    try {
-      scores = JSON.parse(scRes[scIndex].getContentText("UTF-8")) || [];
-    } catch (error) {
-      showMessage("Could not fetch scores for beatmap " + job.id);
-    }
-  }
-
-  const rowData = createBeatmapRow(beatmapData, scores);
-  const result = { rowData };
-  if (job.addInputURL && beatmapData) {
-    result.inputURL = `https://osu.ppy.sh/beatmapsets/${beatmapData.beatmapset_id}#osu/${beatmapData.beatmap_id}`;
-  }
-
-  return result;
 }
 
 /**
