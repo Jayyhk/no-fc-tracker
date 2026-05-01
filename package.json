@@ -1,0 +1,14 @@
+{
+  "name": "no-fc-tracker",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "refresh": "node tracker.js refresh",
+    "add-new": "node tracker.js add-new",
+    "move-fcs": "node tracker.js move-fcs"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.0",
+    "googleapis": "^140.0.0"
+  }
+}
