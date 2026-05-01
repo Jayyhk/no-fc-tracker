@@ -652,6 +652,9 @@ async function moveFCsToHistory() {
     }
   }
 
+  // Sort History once at the end rather than after every row move
+  if (moved > 0) await sortHistory();
+
   if (moved || deleted) {
     console.log(`Moved ${moved} FC(s) to History. Deleted ${deleted} recent FC(s).`);
   }
@@ -682,22 +685,26 @@ async function moveRowToHistory(rowNumber) {
   await ensureSheetRows('History', targetRow);
   await sheetSet('History', targetRow, 1, [dataToMove]);
 
-  // Apply row height to new History row
+  // Combine row height update and row delete into a single batchUpdate
   await sheetsClient.spreadsheets.batchUpdate({
     spreadsheetId: SPREADSHEET_ID,
     requestBody: {
-      requests: [{
-        updateDimensionProperties: {
-          range: { sheetId: sheetIds['History'], dimension: 'ROWS', startIndex: historyLastRow, endIndex: historyLastRow + 1 },
-          properties: { pixelSize: 21 },
-          fields: 'pixelSize',
+      requests: [
+        {
+          updateDimensionProperties: {
+            range: { sheetId: sheetIds['History'], dimension: 'ROWS', startIndex: historyLastRow, endIndex: historyLastRow + 1 },
+            properties: { pixelSize: 21 },
+            fields: 'pixelSize',
+          },
         },
-      }],
+        {
+          deleteDimension: {
+            range: { sheetId: sheetIds['Data'], dimension: 'ROWS', startIndex: rowNumber - 1, endIndex: rowNumber },
+          },
+        },
+      ],
     },
   });
-
-  await sheetDeleteRow('Data', rowNumber);
-  await sortHistory();
 }
 
 // ── CLI Entry Point ───────────────────────────────────────────────────────────
@@ -714,12 +721,14 @@ async function main() {
     case 'refresh':   await refreshAllBeatmaps(); break;
     case 'add-new':   await addNewRankedBeatmaps(); break;
     case 'move-fcs':  await moveFCsToHistory(); break;
+    case 'sort':      await sortBeatmapData(); console.log('Sorted.'); break;
     default:
-      console.log('Usage: node tracker.js <command>');
+      console.log('Usage: node no-fc-tracker.js <command>');
       console.log('Commands:');
       console.log('  refresh    Re-fetch all beatmaps and move FCs to History');
       console.log('  add-new    Fetch newly ranked beatmaps from the past day');
       console.log('  move-fcs   Check for FCs and move/delete them');
+      console.log('  sort       Sort Data sheet by star rating');
   }
 }
 
