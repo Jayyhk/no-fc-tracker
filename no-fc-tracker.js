@@ -523,6 +523,70 @@ async function processBeatmapJobs(jobs) {
 
 // ── Main Functions ────────────────────────────────────────────────────────────
 
+async function backfill(sinceDate, untilDate) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(sinceDate) || !/^\d{4}-\d{2}-\d{2}$/.test(untilDate)) {
+    console.error('Dates must be in YYYY-MM-DD format.');
+    return;
+  }
+  const label = `${sinceDate} – ${untilDate}`;
+  const url = `https://osu.ppy.sh/api/get_beatmaps?k=${OSU_API_KEY}&since=${sinceDate}&m=0&approved=1`;
+
+  let beatmaps;
+  try {
+    beatmaps = JSON.parse(await requestContent(url));
+  } catch (err) {
+    console.error('Error fetching beatmaps:', err.message);
+    return;
+  }
+  if (!beatmaps?.length) { console.log('No beatmaps returned.'); return; }
+
+  if (beatmaps.length >= 500) {
+    console.warn('Warning: API returned 500+ results — some maps may be truncated. Consider splitting the date range.');
+  }
+
+  const ranked = beatmaps.filter(b => {
+    if (b.approved !== '1') return false;
+    const approvedDate = (b.approved_date || '').split(' ')[0];
+    return approvedDate >= sinceDate && approvedDate <= untilDate;
+  });
+  if (!ranked.length) { console.log(`No ranked beatmaps found in ${label} range.`); return; }
+
+  const existingIds = await getExistingBeatmapIds();
+  const newBeatmaps = ranked.filter(b => !existingIds.includes(b.beatmap_id));
+  if (!newBeatmaps.length) { console.log(`All ${label} beatmaps already in spreadsheet.`); return; }
+
+  console.log(`Checking ${newBeatmaps.length} new beatmap(s) for FCs...`);
+  const lastRow = await sheetLastRow('Data');
+  let nextRow = Math.max(lastRow + 1, OUTPUT_ROW);
+  const jobs = [];
+  const skipped = [];
+  let addedCount = 0;
+
+  for (const beatmap of newBeatmaps) {
+    let scores = [];
+    try {
+      scores = JSON.parse(await fetchFromAPI(beatmap.beatmap_id, 'scores')) || [];
+    } catch { console.error('Could not fetch scores for', beatmap.beatmap_id); }
+
+    if (scores.some(s => isFC(s, parseInt(beatmap.max_combo)))) {
+      skipped.push(beatmap);
+    } else {
+      jobs.push({ row: nextRow + addedCount, id: beatmap.beatmap_id, beatmapData: beatmap, scores, addInputURL: true });
+      addedCount++;
+    }
+  }
+
+  if (!jobs.length) { console.log(`All ${label} beatmaps already have FCs.`); return; }
+
+  await processBeatmapJobs(jobs);
+  await sortBeatmapData();
+  await updateLastUpdatedTimestamp();
+
+  console.log(`\nAdded ${addedCount} beatmap(s). Skipped ${skipped.length} with FCs.`);
+  for (const job of jobs)  console.log(`  + https://osu.ppy.sh/beatmapsets/${job.beatmapData.beatmapset_id}#osu/${job.beatmapData.beatmap_id}`);
+  for (const b of skipped) console.log(`  - https://osu.ppy.sh/beatmapsets/${b.beatmapset_id}#osu/${b.beatmap_id}`);
+}
+
 async function refreshAllBeatmaps() {
   console.log('Starting refresh...');
   const lastRow = await sheetLastRow('Data');
@@ -722,13 +786,15 @@ async function main() {
     case 'add-new':   await addNewRankedBeatmaps(); break;
     case 'move-fcs':  await moveFCsToHistory(); break;
     case 'sort':      await sortBeatmapData(); console.log('Sorted.'); break;
+    case 'backfill':  await backfill(process.argv[3], process.argv[4]); break;
     default:
-      console.log('Usage: node no-fc-tracker.js <command>');
+      console.log('Usage: node no-fc-tracker.js <command> [args]');
       console.log('Commands:');
-      console.log('  refresh    Re-fetch all beatmaps and move FCs to History');
-      console.log('  add-new    Fetch newly ranked beatmaps from the past day');
-      console.log('  move-fcs   Check for FCs and move/delete them');
-      console.log('  sort       Sort Data sheet by star rating');
+      console.log('  refresh                       Re-fetch all beatmaps and move FCs to History');
+      console.log('  add-new                       Fetch newly ranked beatmaps from the past day');
+      console.log('  move-fcs                      Check for FCs and move/delete them');
+      console.log('  sort                          Sort Data sheet by star rating');
+      console.log('  backfill <since> <until>      Add ranked maps in date range (YYYY-MM-DD)');
   }
 }
 
