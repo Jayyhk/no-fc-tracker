@@ -349,11 +349,16 @@ function buildOsr(score, beatmapMd5, replayData) {
 
 async function runDanser(beatmapID, replayPath) {
   return new Promise((resolve) => {
-    const sPatch = JSON.stringify({ Recording: { FPS: 1, libx264: { Preset: 'ultrafast' } } });
+    const sPatch = JSON.stringify({
+      Recording: { FrameWidth: 16, FrameHeight: 16, FPS: 1, libx264: { Preset: 'ultrafast' } },
+      Playfield: { Background: { LoadStoryboards: false }, DrawCursors: false },
+      Cursor: { EnableTrailGlow: false, SmokeEnabled: false },
+      General: { DiscordPresenceOn: false },
+    });
     const proc = spawn(
       path.join(DANSER_DIR, 'danser-cli'),
       ['-id', String(beatmapID), '-knockout2', JSON.stringify([replayPath]),
-       '-record', '-out', '/tmp/_fc_check.mp4', '-quickstart', '-sPatch', sPatch],
+       '-record', '-out', '/dev/null', '-quickstart', '-sPatch', sPatch],
       { cwd: DANSER_DIR, env: { ...process.env, DISPLAY: process.env.DISPLAY || ':0' } }
     );
     let stdout = '';
