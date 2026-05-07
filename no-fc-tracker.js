@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createInterface } from 'readline/promises';
+import { spawn } from 'child_process';
 import 'dotenv/config';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -69,6 +70,42 @@ async function initSheets() {
 
 // ── Sheet Helpers ─────────────────────────────────────────────────────────────
 
+// Sheets API quota: 60 read req/min and 60 write req/min per user. Stay under that proactively.
+const SHEETS_LIMIT = 55;
+const sheetsReadTimes = [];
+const sheetsWriteTimes = [];
+
+async function waitForSheetsSlot(kind) {
+  const arr = kind === 'read' ? sheetsReadTimes : sheetsWriteTimes;
+  while (true) {
+    const now = Date.now();
+    while (arr.length > 0 && now - arr[0] >= 60000) arr.shift();
+    if (arr.length < SHEETS_LIMIT) {
+      arr.push(now);
+      return;
+    }
+    const waitMs = 60000 - (now - arr[0]) + 100;
+    await new Promise(r => setTimeout(r, waitMs));
+  }
+}
+
+// Wraps a Sheets API call with proactive rate limiting + 429 retry
+async function withSheetsRetry(kind, fn, attempt = 1) {
+  await waitForSheetsSlot(kind);
+  try {
+    return await fn();
+  } catch (err) {
+    const code = err?.code || err?.response?.status;
+    if (code === 429 && attempt <= 6) {
+      const waitMs = Math.min(60000, 2000 * 2 ** (attempt - 1));
+      console.log(`Sheets API 429 (${kind}), retrying in ${waitMs / 1000}s... (attempt ${attempt})`);
+      await new Promise(r => setTimeout(r, waitMs));
+      return withSheetsRetry(kind, fn, attempt + 1);
+    }
+    throw err;
+  }
+}
+
 function colLetter(n) {
   let s = '';
   while (n > 0) {
@@ -83,21 +120,21 @@ function a1(sheet, startRow, startCol, numRows = 1, numCols = 1) {
 }
 
 async function sheetGet(sheet, startRow, startCol, numRows, numCols, renderOption = 'UNFORMATTED_VALUE') {
-  const res = await sheetsClient.spreadsheets.values.get({
+  const res = await withSheetsRetry('read', () => sheetsClient.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
     range: a1(sheet, startRow, startCol, numRows, numCols),
     valueRenderOption: renderOption,
-  });
+  }));
   return res.data.values || [];
 }
 
 async function sheetSet(sheet, startRow, startCol, values) {
-  await sheetsClient.spreadsheets.values.update({
+  await withSheetsRetry('write', () => sheetsClient.spreadsheets.values.update({
     spreadsheetId: SPREADSHEET_ID,
     range: `${sheet}!${colLetter(startCol)}${startRow}`,
     valueInputOption: 'USER_ENTERED',
     requestBody: { values },
-  });
+  }));
 }
 
 async function sheetBatchSet(ranges) {
@@ -108,29 +145,26 @@ async function sheetBatchSet(ranges) {
     values: r.values,
   }));
   for (let i = 0; i < data.length; i += CHUNK) {
-    await sheetsClient.spreadsheets.values.batchUpdate({
+    await withSheetsRetry('write', () => sheetsClient.spreadsheets.values.batchUpdate({
       spreadsheetId: SPREADSHEET_ID,
       requestBody: { valueInputOption: 'USER_ENTERED', data: data.slice(i, i + CHUNK) },
-    });
+    }));
   }
 }
 
 async function sheetLastRow(sheet) {
-  // Column A has =IMAGE() formulas in data rows which return empty in UNFORMATTED_VALUE.
-  // Use column W (input URL) for Data — plain text, always populated.
-  // Use column K (beatmap ID) for History — plain number, always populated.
   const colMap = { Data: 'W', History: 'K', About: 'A' };
   const col = colMap[sheet] || 'A';
-  const res = await sheetsClient.spreadsheets.values.get({
+  const res = await withSheetsRetry('read', () => sheetsClient.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
     range: `${sheet}!${col}:${col}`,
     valueRenderOption: 'UNFORMATTED_VALUE',
-  });
+  }));
   return (res.data.values || []).length;
 }
 
 async function sheetDeleteRow(sheet, rowNumber) {
-  await sheetsClient.spreadsheets.batchUpdate({
+  await withSheetsRetry('write', () => sheetsClient.spreadsheets.batchUpdate({
     spreadsheetId: SPREADSHEET_ID,
     requestBody: {
       requests: [{
@@ -139,13 +173,13 @@ async function sheetDeleteRow(sheet, rowNumber) {
         },
       }],
     },
-  });
+  }));
 }
 
 async function sheetSort(sheet, startRow, numCols, sortSpecs) {
   const lastRow = await sheetLastRow(sheet);
   if (lastRow < startRow) return;
-  await sheetsClient.spreadsheets.batchUpdate({
+  await withSheetsRetry('write', () => sheetsClient.spreadsheets.batchUpdate({
     spreadsheetId: SPREADSHEET_ID,
     requestBody: {
       requests: [{
@@ -158,21 +192,21 @@ async function sheetSort(sheet, startRow, numCols, sortSpecs) {
             endColumnIndex: numCols,
           },
           sortSpecs: sortSpecs.map(s => ({
-            dimensionIndex: s.col - 1, // 1-based col → 0-based index
+            dimensionIndex: s.col - 1,
             sortOrder: s.asc ? 'ASCENDING' : 'DESCENDING',
           })),
         },
       }],
     },
-  });
+  }));
 }
 
 async function ensureSheetRows(sheet, requiredRows) {
-  const meta = await sheetsClient.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
+  const meta = await withSheetsRetry('read', () => sheetsClient.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID }));
   const sheetMeta = meta.data.sheets.find(s => s.properties.title === sheet);
   const currentRows = sheetMeta.properties.gridProperties.rowCount;
   if (currentRows < requiredRows) {
-    await sheetsClient.spreadsheets.batchUpdate({
+    await withSheetsRetry('write', () => sheetsClient.spreadsheets.batchUpdate({
       spreadsheetId: SPREADSHEET_ID,
       requestBody: {
         requests: [{
@@ -183,7 +217,7 @@ async function ensureSheetRows(sheet, requiredRows) {
           },
         }],
       },
-    });
+    }));
   }
 }
 
@@ -231,16 +265,60 @@ async function applyBulkFormatting(rowNumbers) {
 
   const CHUNK = 1000;
   for (let i = 0; i < requests.length; i += CHUNK) {
-    await sheetsClient.spreadsheets.batchUpdate({
+    await withSheetsRetry('write', () => sheetsClient.spreadsheets.batchUpdate({
       spreadsheetId: SPREADSHEET_ID,
       requestBody: { requests: requests.slice(i, i + CHUNK) },
-    });
+    }));
   }
 }
 
 // ── Sleep ─────────────────────────────────────────────────────────────────────
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// ── Replay Verification (circleguard) ────────────────────────────────────────
+
+const PYTHON_PATH = path.join(__dirname, '.venv/bin/python');
+const FC_CHECK_PATH = path.join(__dirname, 'fc_check.py');
+const REPLAY_RATE_LIMIT = 10; // get_replay: 10 requests per minute
+const replayRequestTimes = [];
+
+async function waitForReplaySlot() {
+  const now = Date.now();
+  while (replayRequestTimes.length > 0 && now - replayRequestTimes[0] >= 60000) {
+    replayRequestTimes.shift();
+  }
+  if (replayRequestTimes.length >= REPLAY_RATE_LIMIT) {
+    const waitMs = 60000 - (Date.now() - replayRequestTimes[0]) + 500;
+    console.log(`Replay rate limit hit, waiting ${Math.ceil(waitMs / 1000)}s...`);
+    await sleep(waitMs);
+    return waitForReplaySlot();
+  }
+}
+
+async function checkAmbiguousFC(beatmapID, userID, mods) {
+  await waitForReplaySlot();
+  replayRequestTimes.push(Date.now());
+
+  return new Promise((resolve) => {
+    const proc = spawn(PYTHON_PATH, [FC_CHECK_PATH, String(beatmapID), String(userID), String(mods)], {
+      env: { ...process.env, OSU_API_KEY },
+    });
+    let stdout = '';
+    let stderr = '';
+    const timeout = setTimeout(() => {
+      proc.kill();
+      resolve({ error: 'fc_check timed out after 60s' });
+    }, 60000);
+    proc.stdout.on('data', d => stdout += d);
+    proc.stderr.on('data', d => stderr += d);
+    proc.on('close', () => {
+      clearTimeout(timeout);
+      try { resolve(JSON.parse(stdout)); }
+      catch { resolve({ error: `parse error: ${stdout || stderr}` }); }
+    });
+  });
+}
 
 // ── osu! API ──────────────────────────────────────────────────────────────────
 
@@ -321,7 +399,7 @@ function getRankValue(rank) { return RANK_VALUE_MAP.get(rank) || 0; }
 function isRankValid(score) { return score && ['S', 'SH', 'X', 'XH'].includes(score.rank); }
 function areModsValid(modsEnum) { return (modsEnum & INVALID_MODS) === 0; }
 
-function isFC(score, maxCombo) {
+function isFCByCombo(score, maxCombo) {
   if (!score || !isRankValid(score)) return false;
   const mods = parseInt(score.enabled_mods);
   if (!areModsValid(mods)) return false;
@@ -336,8 +414,12 @@ function isAmbiguousFC(score, maxCombo) {
   return parseInt(score.maxcombo) + parseInt(score.count100) >= maxCombo;
 }
 
-function findBestScore(scores, maxCombo) {
-  let best = { userID: 0, player: '', modString: '', currentMaxCombo: 0, rank: '', scoreDate: '', percentFC: 0, isAmbiguousFC: false };
+
+// Returns the best score for the beatmap with authoritative `isFC` boolean.
+// If a score passes the heuristic isFC, returns it as FC immediately.
+// If no heuristic FC but best is ambiguous AND beatmapID is provided, runs danser verification.
+async function findBestScore(scores, maxCombo, beatmapID = null) {
+  let best = { userID: 0, player: '', modString: '', currentMaxCombo: 0, rank: '', scoreDate: '', percentFC: 0, isFC: false, isAmbiguousFC: false };
   const limit = Math.min(scores.length, 50);
 
   for (let i = 0; i < limit; i++) {
@@ -345,7 +427,7 @@ function findBestScore(scores, maxCombo) {
     const mods = parseInt(score.enabled_mods);
     if (!areModsValid(mods)) continue;
 
-    if (isFC(score, maxCombo)) {
+    if (isFCByCombo(score, maxCombo)) {
       return {
         userID: parseInt(score.user_id),
         player: score.username,
@@ -354,6 +436,7 @@ function findBestScore(scores, maxCombo) {
         rank: score.rank,
         scoreDate: score.date ? formatDate(score.date) : '',
         percentFC: (parseInt(score.maxcombo) / maxCombo) * 100,
+        isFC: true,
         isAmbiguousFC: false,
       };
     }
@@ -368,10 +451,22 @@ function findBestScore(scores, maxCombo) {
         rank: score.rank,
         scoreDate: score.date ? formatDate(score.date) : '',
         percentFC: (combo / maxCombo) * 100,
+        isFC: false,
         isAmbiguousFC: isAmbiguousFC(score, maxCombo),
       };
     }
   }
+
+  // Verify ambiguous best score if we have a beatmapID
+  if (beatmapID && best.isAmbiguousFC && best.userID) {
+    const result = await checkAmbiguousFC(beatmapID, best.userID, getModEnum(best.modString));
+    if (result.is_fc) {
+      console.log(`Verified FC: beatmap ${beatmapID} (${best.player})`);
+      return { ...best, isFC: true, isAmbiguousFC: false };
+    }
+    if (result.error) console.error(`Replay check failed for ${beatmapID}/${best.userID}: ${result.error}`);
+  }
+
   return best;
 }
 
@@ -388,9 +483,12 @@ function createPlayerHyperlink(userID, username) {
   return createHyperlink(`https://osu.ppy.sh/users/${userID}/osu`, username);
 }
 
-function createBeatmapRow(beatmapData, scores) {
+async function createBeatmapRow(beatmapData, scores, best = null) {
   const maxCombo = parseInt(beatmapData.max_combo);
-  const best = findBestScore(scores, maxCombo);
+  if (!best) best = await findBestScore(scores, maxCombo, beatmapData.beatmap_id);
+  // If best is a verified FC (regular or via danser), reflect it in the row indicators
+  const showCombo  = best.isFC ? maxCombo : best.currentMaxCombo;
+  const showPctFC  = best.isFC ? 100 : best.percentFC;
   return [
     `=IMAGE("https://assets.ppy.sh/beatmaps/${beatmapData.beatmapset_id}/covers/cover.jpg", 2)`,
     createBeatmapNameHyperlink(beatmapData),
@@ -410,9 +508,9 @@ function createBeatmapRow(beatmapData, scores) {
     best.scoreDate,
     best.rank,
     best.modString,
-    best.currentMaxCombo,
+    showCombo,
     maxCombo,
-    best.percentFC,
+    showPctFC,
     best.isAmbiguousFC ? '✓' : '',
   ];
 }
@@ -442,9 +540,10 @@ async function setBulkRowData(rowNumbers, allRowData) {
 }
 
 async function setBulkInputURLs(inputURLs) {
-  for (const { row, url } of inputURLs) {
-    await sheetSet('Data', row, INPUT_COL, [[url]]);
-  }
+  if (!inputURLs.length) return;
+  await sheetBatchSet(inputURLs.map(({ row, url }) => ({
+    sheet: 'Data', startRow: row, startCol: INPUT_COL, values: [[url]],
+  })));
 }
 
 async function sortBeatmapData() {
@@ -462,63 +561,52 @@ async function updateLastUpdatedTimestamp() {
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
   const stamp = `${yesterday.getMonth() + 1}/${yesterday.getDate()}/${yesterday.getFullYear()}`;
-  await sheetsClient.spreadsheets.values.update({
+  await withSheetsRetry('write', () => sheetsClient.spreadsheets.values.update({
     spreadsheetId: SPREADSHEET_ID,
     range: 'About!B23:G24',
     valueInputOption: 'USER_ENTERED',
     requestBody: { values: [[`Last Updated: ${stamp}`]] },
-  });
+  }));
 }
 
-// ── processBeatmapJobs ────────────────────────────────────────────────────────
+// ── processRefreshJobs ────────────────────────────────────────────────────────
 
-async function processBeatmapJobs(jobs) {
+// For refresh only: fetches beatmap data + scores per job, builds rows, bulk writes.
+// add-new/backfill build rows inline and call setBulkRowData/setBulkInputURLs directly.
+async function processRefreshJobs(jobs) {
   const allRowData = [];
-  const allInputURLs = [];
   const rowNumbers = [];
   const beatmapBase = `https://osu.ppy.sh/api/get_beatmaps?k=${OSU_API_KEY}&b=`;
   const scoresBase  = `https://osu.ppy.sh/api/get_scores?k=${OSU_API_KEY}&b=`;
 
   for (const job of jobs) {
-    let beatmapData = job.beatmapData;
-    let scores = job.scores || [];
-
+    let beatmapData;
+    try {
+      beatmapData = JSON.parse(await requestContent(beatmapBase + job.id))[0];
+    } catch (err) {
+      allRowData.push(createErrorRow('API Error: ' + err.message));
+      rowNumbers.push(job.row);
+      continue;
+    }
     if (!beatmapData) {
-      try {
-        beatmapData = JSON.parse(await requestContent(beatmapBase + job.id))[0];
-      } catch (err) {
-        allRowData.push(createErrorRow('API Error: ' + err.message));
-        rowNumbers.push(job.row);
-        continue;
-      }
-      if (!beatmapData) {
-        allRowData.push(createErrorRow('Invalid beatmap ID'));
-        rowNumbers.push(job.row);
-        continue;
-      }
+      allRowData.push(createErrorRow('Invalid beatmap ID'));
+      rowNumbers.push(job.row);
+      continue;
     }
 
-    if (!job.scores) {
-      try {
-        scores = JSON.parse(await requestContent(scoresBase + job.id)) || [];
-      } catch {
-        console.error('Could not fetch scores for beatmap', job.id);
-      }
+    let scores = [];
+    try {
+      scores = JSON.parse(await requestContent(scoresBase + job.id)) || [];
+    } catch {
+      console.error('Could not fetch scores for beatmap', job.id);
     }
 
-    allRowData.push(createBeatmapRow(beatmapData, scores));
+    const rowData = await createBeatmapRow(beatmapData, scores);
+    allRowData.push(rowData);
     rowNumbers.push(job.row);
-
-    if (job.addInputURL && beatmapData) {
-      allInputURLs.push({
-        row: job.row,
-        url: `https://osu.ppy.sh/beatmapsets/${beatmapData.beatmapset_id}#osu/${beatmapData.beatmap_id}`,
-      });
-    }
   }
 
   if (allRowData.length > 0) await setBulkRowData(rowNumbers, allRowData);
-  if (allInputURLs.length > 0) await setBulkInputURLs(allInputURLs);
 }
 
 // ── Main Functions ────────────────────────────────────────────────────────────
@@ -557,10 +645,10 @@ async function backfill(sinceDate, untilDate) {
 
   console.log(`Checking ${newBeatmaps.length} new beatmap(s) for FCs...`);
   const lastRow = await sheetLastRow('Data');
-  let nextRow = Math.max(lastRow + 1, OUTPUT_ROW);
-  const jobs = [];
+  const nextRow = Math.max(lastRow + 1, OUTPUT_ROW);
+  const addedRows = [];
+  const added = [];
   const skipped = [];
-  let addedCount = 0;
 
   for (const beatmap of newBeatmaps) {
     let scores = [];
@@ -568,22 +656,27 @@ async function backfill(sinceDate, untilDate) {
       scores = JSON.parse(await fetchFromAPI(beatmap.beatmap_id, 'scores')) || [];
     } catch { console.error('Could not fetch scores for', beatmap.beatmap_id); }
 
-    if (scores.some(s => isFC(s, parseInt(beatmap.max_combo)))) {
+    const best = await findBestScore(scores, parseInt(beatmap.max_combo), beatmap.beatmap_id);
+    if (best.isFC) {
       skipped.push(beatmap);
     } else {
-      jobs.push({ row: nextRow + addedCount, id: beatmap.beatmap_id, beatmapData: beatmap, scores, addInputURL: true });
-      addedCount++;
+      const row = nextRow + addedRows.length;
+      const rowData = await createBeatmapRow(beatmap, scores, best);
+      const url = `https://osu.ppy.sh/beatmapsets/${beatmap.beatmapset_id}#osu/${beatmap.beatmap_id}`;
+      addedRows.push({ row, rowData, url });
+      added.push(beatmap);
     }
   }
 
-  if (!jobs.length) { console.log(`All ${label} beatmaps already have FCs.`); return; }
+  if (!added.length) { console.log(`All ${label} beatmaps already have FCs.`); return; }
 
-  await processBeatmapJobs(jobs);
+  await setBulkRowData(addedRows.map(r => r.row), addedRows.map(r => r.rowData));
+  await setBulkInputURLs(addedRows.map(({ row, url }) => ({ row, url })));
   await sortBeatmapData();
   await updateLastUpdatedTimestamp();
 
-  console.log(`\nAdded ${addedCount} beatmap(s). Skipped ${skipped.length} with FCs.`);
-  for (const job of jobs)  console.log(`  + https://osu.ppy.sh/beatmapsets/${job.beatmapData.beatmapset_id}#osu/${job.beatmapData.beatmap_id}`);
+  console.log(`\nAdded ${added.length} beatmap(s). Skipped ${skipped.length} with FCs.`);
+  for (const b of added)   console.log(`  + https://osu.ppy.sh/beatmapsets/${b.beatmapset_id}#osu/${b.beatmap_id}`);
   for (const b of skipped) console.log(`  - https://osu.ppy.sh/beatmapsets/${b.beatmapset_id}#osu/${b.beatmap_id}`);
 }
 
@@ -602,7 +695,7 @@ async function refreshAllBeatmaps() {
     .filter(Boolean);
 
   console.log(`Processing ${jobs.length} beatmaps (this will take ~${Math.round(jobs.length * 2 / 60)} minutes)...`);
-  await processBeatmapJobs(jobs);
+  await processRefreshJobs(jobs);
   await moveFCsToHistory();
   await updateLastUpdatedTimestamp();
   console.log(`Done! Processed ${jobs.length} beatmaps.`);
@@ -632,10 +725,10 @@ async function addNewRankedBeatmaps() {
 
   console.log(`Checking ${newBeatmaps.length} new beatmap(s) for FCs...`);
   const lastRow = await sheetLastRow('Data');
-  let nextRow = Math.max(lastRow + 1, OUTPUT_ROW);
-  const jobs = [];
+  const nextRow = Math.max(lastRow + 1, OUTPUT_ROW);
+  const addedRows = [];
+  const added = [];
   const skipped = [];
-  let addedCount = 0;
 
   for (const beatmap of newBeatmaps) {
     let scores = [];
@@ -643,32 +736,44 @@ async function addNewRankedBeatmaps() {
       scores = JSON.parse(await fetchFromAPI(beatmap.beatmap_id, 'scores')) || [];
     } catch { console.error('Could not fetch scores for', beatmap.beatmap_id); }
 
-    if (scores.some(s => isFC(s, parseInt(beatmap.max_combo)))) {
+    const best = await findBestScore(scores, parseInt(beatmap.max_combo), beatmap.beatmap_id);
+    if (best.isFC) {
       skipped.push(beatmap);
     } else {
-      jobs.push({ row: nextRow + addedCount, id: beatmap.beatmap_id, beatmapData: beatmap, scores, addInputURL: true });
-      addedCount++;
+      const row = nextRow + addedRows.length;
+      const rowData = await createBeatmapRow(beatmap, scores, best);
+      const url = `https://osu.ppy.sh/beatmapsets/${beatmap.beatmapset_id}#osu/${beatmap.beatmap_id}`;
+      addedRows.push({ row, rowData, url });
+      added.push(beatmap);
     }
   }
 
-  if (!jobs.length) { console.log('All new beatmaps already have FCs.'); return; }
+  if (!added.length) { console.log('All new beatmaps already have FCs.'); return; }
 
-  await processBeatmapJobs(jobs);
+  await setBulkRowData(addedRows.map(r => r.row), addedRows.map(r => r.rowData));
+  await setBulkInputURLs(addedRows.map(({ row, url }) => ({ row, url })));
   await sortBeatmapData();
   await updateLastUpdatedTimestamp();
 
-  console.log(`\nAdded ${addedCount} beatmap(s). Skipped ${skipped.length} with FCs.`);
-  for (const job of jobs)    console.log(`  + https://osu.ppy.sh/beatmapsets/${job.beatmapData.beatmapset_id}#osu/${job.beatmapData.beatmap_id}`);
-  for (const b of skipped)   console.log(`  - https://osu.ppy.sh/beatmapsets/${b.beatmapset_id}#osu/${b.beatmap_id}`);
+  console.log(`\nAdded ${added.length} beatmap(s). Skipped ${skipped.length} with FCs.`);
+  for (const b of added)   console.log(`  + https://osu.ppy.sh/beatmapsets/${b.beatmapset_id}#osu/${b.beatmap_id}`);
+  for (const b of skipped) console.log(`  - https://osu.ppy.sh/beatmapsets/${b.beatmapset_id}#osu/${b.beatmap_id}`);
 }
 
-async function moveFCsToHistory() {
-  const lastRow = await sheetLastRow('Data');
-  const rowCount = lastRow - OUTPUT_ROW + 1;
-  if (rowCount <= 0) return;
-
-  // Use FORMATTED_VALUE so dates come back as "M/D/YYYY" strings and mod strings are readable
-  const allData = await sheetGet('Data', OUTPUT_ROW, OUTPUT_COL, rowCount, NUM_COLS, 'FORMATTED_VALUE');
+async function moveFCsToHistory(rowNumbers) {
+  // If rowNumbers is given, only check those specific rows. Otherwise scan all.
+  let startRow, allData;
+  if (rowNumbers && rowNumbers.length) {
+    startRow = Math.min(...rowNumbers);
+    const endRow = Math.max(...rowNumbers);
+    allData = await sheetGet('Data', startRow, OUTPUT_COL, endRow - startRow + 1, NUM_COLS, 'FORMATTED_VALUE');
+  } else {
+    const lastRow = await sheetLastRow('Data');
+    const rowCount = lastRow - OUTPUT_ROW + 1;
+    if (rowCount <= 0) return;
+    startRow = OUTPUT_ROW;
+    allData = await sheetGet('Data', OUTPUT_ROW, OUTPUT_COL, rowCount, NUM_COLS, 'FORMATTED_VALUE');
+  }
   const toMove = [];
   const toDelete = [];
 
@@ -686,9 +791,9 @@ async function moveFCsToHistory() {
     if (isNaN(daysRanked) || isNaN(currentMaxCombo) || isNaN(maxCombo)) continue;
 
     const score = { rank, maxcombo: currentMaxCombo, enabled_mods: getModEnum(modString) };
-    if (!isFC(score, maxCombo)) continue;
+    if (!isFCByCombo(score, maxCombo)) continue;
 
-    const entry = { row: OUTPUT_ROW + i, beatmapsetID: row[11], beatmapID: row[10] };
+    const entry = { row: startRow + i, beatmapsetID: row[11], beatmapID: row[10] };
 
     if (daysRanked >= 30) {
       if (scoreDate && scoreDate !== '' && !isNaN(new Date(scoreDate).getTime())) {
@@ -750,7 +855,7 @@ async function moveRowToHistory(rowNumber) {
   await sheetSet('History', targetRow, 1, [dataToMove]);
 
   // Combine row height update and row delete into a single batchUpdate
-  await sheetsClient.spreadsheets.batchUpdate({
+  await withSheetsRetry('write', () => sheetsClient.spreadsheets.batchUpdate({
     spreadsheetId: SPREADSHEET_ID,
     requestBody: {
       requests: [
@@ -768,7 +873,7 @@ async function moveRowToHistory(rowNumber) {
         },
       ],
     },
-  });
+  }));
 }
 
 // ── CLI Entry Point ───────────────────────────────────────────────────────────
