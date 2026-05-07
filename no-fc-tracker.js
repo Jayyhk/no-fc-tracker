@@ -236,11 +236,11 @@ async function applyBulkFormatting(rowNumbers) {
   const numberFormats = [
     { col: 3,  pattern: '0.00' },  // C - SR
     { col: 4,  type: 'TEXT' },     // D - Length (force text so "4:10" doesn't become a time)
-    { col: 5,  pattern: '0.##' },  // E - BPM
-    { col: 6,  pattern: '0.#' },   // F - CS
-    { col: 7,  pattern: '0.#' },   // G - AR
-    { col: 8,  pattern: '0.#' },   // H - OD
-    { col: 9,  pattern: '0.#' },   // I - HP
+    { col: 5,  clear: true },       // E - BPM
+    { col: 6,  clear: true },       // F - CS
+    { col: 7,  clear: true },       // G - AR
+    { col: 8,  clear: true },       // H - OD
+    { col: 9,  clear: true },       // I - HP
     { col: 21, pattern: '0.00' },  // U - % FC
   ];
 
@@ -259,7 +259,7 @@ async function applyBulkFormatting(rowNumbers) {
       requests.push({
         repeatCell: {
           range: { sheetId, startRowIndex: ri, endRowIndex: ri + 1, startColumnIndex: ci, endColumnIndex: ci + 1 },
-          cell: {
+          cell: fmt.clear ? {} : {
             userEnteredFormat: {
               numberFormat: fmt.type ? { type: fmt.type } : { type: 'NUMBER', pattern: fmt.pattern },
             },
@@ -367,6 +367,8 @@ async function runDanser(beatmapID, replayPath) {
         if (m) {
           const currentCombo = parseInt(m[1].replace(/,/g, ''));
           const maxCombo     = parseInt(m[2].replace(/,/g, ''));
+          // COMBO = final combo, MAX COMBO = player's personal best during the play (not map max).
+          // If equal, combo never reset → FC. Missed slider ticks reduce both equally so they still match.
           resolve({ is_fc: currentCombo === maxCombo, current_combo: currentCombo, max_combo: maxCombo });
           return;
         }
@@ -508,7 +510,7 @@ function isAmbiguousFC(score, maxCombo) {
 
 async function findBestScore(scores, maxCombo, beatmapID = null) {
   let best = { userID: 0, player: '', modString: '', currentMaxCombo: 0, rank: '', scoreDate: '', percentFC: 0, isFC: false, isAmbiguousFC: false };
-  let rawBest = null;
+  const ambiguous = [];
   const limit = Math.min(scores.length, 50);
 
   for (let i = 0; i < limit; i++) {
@@ -543,19 +545,35 @@ async function findBestScore(scores, maxCombo, beatmapID = null) {
         isFC: false,
         isAmbiguousFC: isAmbiguousFC(score, maxCombo),
       };
-      rawBest = score;
     }
+
+    if (beatmapID && isAmbiguousFC(score, maxCombo)) ambiguous.push(score);
   }
 
-  // Verify isAmbiguousFC best score via danser if we have a beatmapID
-  if (beatmapID && best.isAmbiguousFC && best.userID && rawBest) {
-    const result = await checkAmbiguousFC(beatmapID, best.userID, getModEnum(best.modString), rawBest);
-    if (result.is_fc) {
-      console.log(`Verified FC: beatmap ${beatmapID} (${best.player})`);
-      return { ...best, isFC: true, isAmbiguousFC: false };
+  // Verify all ambiguous scores via danser, highest combo first
+  if (beatmapID && ambiguous.length > 0) {
+    ambiguous.sort((a, b) => parseInt(b.maxcombo) - parseInt(a.maxcombo));
+    for (const score of ambiguous) {
+      const mods = parseInt(score.enabled_mods);
+      const result = await checkAmbiguousFC(beatmapID, parseInt(score.user_id), mods, score);
+      if (result.is_fc) {
+        console.log(`Verified FC: beatmap ${beatmapID} (${score.username})`);
+        const combo = parseInt(score.maxcombo);
+        return {
+          userID: parseInt(score.user_id),
+          player: score.username,
+          modString: getModString(mods),
+          currentMaxCombo: combo,
+          rank: score.rank,
+          scoreDate: score.date ? formatDate(score.date) : '',
+          percentFC: (combo / maxCombo) * 100,
+          isFC: true,
+          isAmbiguousFC: false,
+        };
+      }
+      if (result.error) console.error(`Replay check failed for ${beatmapID}/${score.user_id}: ${result.error}${result.stdout_tail ? '\n' + result.stdout_tail : ''}`);
+      else console.log(`Not FC: beatmap ${beatmapID} (${score.username})`);
     }
-    if (result.error) console.error(`Replay check failed for ${beatmapID}/${best.userID}: ${result.error}${result.stdout_tail ? '\n' + result.stdout_tail : ''}`);
-    else console.log(`Not FC: beatmap ${beatmapID} (${best.player})`);
   }
 
   return best;
