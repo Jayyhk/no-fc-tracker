@@ -503,7 +503,7 @@ function isAmbiguousFC(score, maxCombo) {
   if (!score || !isRankValid(score)) return false;
   const mods = parseInt(score.enabled_mods);
   if (!areModsValid(mods) || (mods & 32) || (mods & 16384)) return false;
-  return parseInt(score.maxcombo) + parseInt(score.count100) >= maxCombo;
+  return parseInt(score.maxcombo) + parseInt(score.count100) + parseInt(score.count50) >= maxCombo;
 }
 
 async function findBestScore(scores, maxCombo, beatmapID = null) {

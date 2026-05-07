@@ -16,7 +16,7 @@ A score is considered an FC if:
 - It used SD or PF (forced FC mods), or
 - Its combo is `>= max_combo - 1`
 
-For **ambiguous scores** — where `combo + count_100 >= max_combo` but the combo heuristic alone can't confirm an FC — the script downloads the replay and runs it through [danser-go](https://github.com/Wieku/danser-go) headlessly to simulate the play and verify whether combo was ever broken.
+For **ambiguous scores** — where `combo + count_100 + count_50 >= max_combo` but the combo heuristic alone can't confirm an FC — the script downloads the replay and runs it through [danser-go](https://github.com/Wieku/danser-go) headlessly to simulate the play and verify whether combo was ever broken.
 
 ## Commands
 
