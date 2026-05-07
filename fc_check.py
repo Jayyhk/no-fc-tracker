@@ -98,7 +98,6 @@ def main():
                 '-knockout2', json.dumps([str(replay_path)]),
                 '-record',
                 '-out', '/tmp/_fc_check.mp4',
-                '-nodbcheck',
                 '-skip',
             ],
             cwd=str(DANSER_DIR),

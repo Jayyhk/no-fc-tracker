@@ -464,7 +464,7 @@ async function findBestScore(scores, maxCombo, beatmapID = null) {
       console.log(`Verified FC: beatmap ${beatmapID} (${best.player})`);
       return { ...best, isFC: true, isAmbiguousFC: false };
     }
-    if (result.error) console.error(`Replay check failed for ${beatmapID}/${best.userID}: ${result.error}`);
+    if (result.error) console.error(`Replay check failed for ${beatmapID}/${best.userID}: ${result.error}${result.stdout_tail ? '\n' + result.stdout_tail : ''}`);
   }
 
   return best;
