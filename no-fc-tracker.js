@@ -17,10 +17,10 @@ const RATE_LIMIT_DELAY = 1000;
 const CREDENTIALS_PATH = path.join(__dirname, 'credentials.json');
 const TOKEN_PATH = path.join(__dirname, 'token.json');
 
-const INPUT_COL = 23;  // Column W
+const INPUT_COL = 22;  // Column V
 const OUTPUT_COL = 1;  // Column A
 const OUTPUT_ROW = 2;  // First data row (row 1 is header)
-const NUM_COLS = 22;   // Columns A–V
+const NUM_COLS = 21;   // Columns A–U
 
 const VALID_MODS = { 0:'NM',1:'NF',2:'EZ',4:'TD',8:'HD',16:'HR',32:'SD',64:'DT',256:'HT',512:'NC',1024:'FL',4096:'SO',16384:'PF' };
 const INVALID_MODS = 2 | 4 | 256 | 4096; // EZ | TD | HT | SO
@@ -153,7 +153,7 @@ async function sheetBatchSet(ranges) {
 }
 
 async function sheetLastRow(sheet) {
-  const colMap = { Data: 'W', History: 'K', About: 'A' };
+  const colMap = { Data: 'V', History: 'K', About: 'A' };
   const col = colMap[sheet] || 'A';
   const res = await withSheetsRetry('read', () => sheetsClient.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
@@ -414,10 +414,9 @@ function isAmbiguousFC(score, maxCombo) {
   return parseInt(score.maxcombo) + parseInt(score.count100) >= maxCombo;
 }
 
-
 // Returns the best score for the beatmap with authoritative `isFC` boolean.
 // If a score passes the heuristic isFC, returns it as FC immediately.
-// If no heuristic FC but best is ambiguous AND beatmapID is provided, runs danser verification.
+// If no heuristic FC but best is isAmbiguousFC AND beatmapID is provided, runs danser verification.
 async function findBestScore(scores, maxCombo, beatmapID = null) {
   let best = { userID: 0, player: '', modString: '', currentMaxCombo: 0, rank: '', scoreDate: '', percentFC: 0, isFC: false, isAmbiguousFC: false };
   const limit = Math.min(scores.length, 50);
@@ -457,7 +456,7 @@ async function findBestScore(scores, maxCombo, beatmapID = null) {
     }
   }
 
-  // Verify ambiguous best score if we have a beatmapID
+  // Verify isAmbiguousFC best score via danser if we have a beatmapID
   if (beatmapID && best.isAmbiguousFC && best.userID) {
     const result = await checkAmbiguousFC(beatmapID, best.userID, getModEnum(best.modString));
     if (result.is_fc) {
@@ -511,7 +510,6 @@ async function createBeatmapRow(beatmapData, scores, best = null) {
     showCombo,
     maxCombo,
     showPctFC,
-    best.isAmbiguousFC ? '✓' : '',
   ];
 }
 
@@ -547,11 +545,11 @@ async function setBulkInputURLs(inputURLs) {
 }
 
 async function sortBeatmapData() {
-  await sheetSort('Data', OUTPUT_ROW, NUM_COLS + 1, [{ col: 3, asc: true }]); // col C = SR
+  await sheetSort('Data', OUTPUT_ROW, INPUT_COL, [{ col: 3, asc: true }]); // col C = SR, sort through input URL col
 }
 
 async function sortHistory() {
-  await sheetSort('History', 2, NUM_COLS - 2, [
+  await sheetSort('History', 2, NUM_COLS - 1, [
     { col: 16, asc: true }, // col P = score date
     { col: 3,  asc: true }, // col C = star rating
   ]);
@@ -680,21 +678,23 @@ async function backfill(sinceDate, untilDate) {
   for (const b of skipped) console.log(`  - https://osu.ppy.sh/beatmapsets/${b.beatmapset_id}#osu/${b.beatmap_id}`);
 }
 
-async function refreshAllBeatmaps() {
-  console.log('Starting refresh...');
+async function refreshBeatmaps(fromRow, toRow) {
   const lastRow = await sheetLastRow('Data');
-  const totalCount = lastRow - OUTPUT_ROW + 1;
-  if (totalCount <= 0) { console.log('No beatmaps to refresh.'); return; }
+  const start = fromRow ? Math.max(fromRow, OUTPUT_ROW) : OUTPUT_ROW;
+  const end   = toRow   ? Math.min(toRow, lastRow)      : lastRow;
+  if (start > end) { console.log('No beatmaps to refresh.'); return; }
 
-  const urlRows = await sheetGet('Data', OUTPUT_ROW, INPUT_COL, totalCount, 1, 'FORMATTED_VALUE');
+  const count = end - start + 1;
+  const urlRows = await sheetGet('Data', start, INPUT_COL, count, 1, 'FORMATTED_VALUE');
   const jobs = urlRows
     .map((row, i) => {
       const id = String(row?.[0] || '').match(/\d+$/)?.[0] || '';
-      return id ? { row: OUTPUT_ROW + i, id } : null;
+      return id ? { row: start + i, id } : null;
     })
     .filter(Boolean);
 
-  console.log(`Processing ${jobs.length} beatmaps (this will take ~${Math.round(jobs.length * 2 / 60)} minutes)...`);
+  const rangeLabel = (fromRow || toRow) ? ` (rows ${start}–${end})` : '';
+  console.log(`Processing ${jobs.length} beatmaps${rangeLabel} (this will take ~${Math.round(jobs.length * 2 / 60)} minutes)...`);
   await processRefreshJobs(jobs);
   await moveFCsToHistory();
   await updateLastUpdatedTimestamp();
@@ -781,24 +781,25 @@ async function moveFCsToHistory(rowNumbers) {
     const row = allData[i] || [];
     if (row.every(c => c === '' || c == null)) continue;
 
-    const daysRanked      = parseInt(row[13]);       // col N
+    const rankedDate      = row[12];                 // col M
     const scoreDate       = row[15];                 // col P
     const rank            = row[16];                 // col Q
     const modString       = row[17] || '';           // col R
     const currentMaxCombo = parseInt(row[18]);       // col S
     const maxCombo        = parseInt(row[19]);       // col T
 
-    if (isNaN(daysRanked) || isNaN(currentMaxCombo) || isNaN(maxCombo)) continue;
+    if (isNaN(currentMaxCombo) || isNaN(maxCombo)) continue;
 
     const score = { rank, maxcombo: currentMaxCombo, enabled_mods: getModEnum(modString) };
     if (!isFCByCombo(score, maxCombo)) continue;
 
     const entry = { row: startRow + i, beatmapsetID: row[11], beatmapID: row[10] };
 
-    if (daysRanked >= 30) {
-      if (scoreDate && scoreDate !== '' && !isNaN(new Date(scoreDate).getTime())) {
-        toMove.push(entry);
-      }
+    const hasScoreDate = scoreDate && scoreDate !== '' && !isNaN(new Date(scoreDate).getTime());
+    const daysToFC = hasScoreDate ? calculateDaysToFC(rankedDate, scoreDate) : Infinity;
+
+    if (daysToFC >= 30) {
+      if (hasScoreDate) toMove.push(entry);
     } else {
       toDelete.push(entry);
     }
@@ -830,7 +831,7 @@ async function moveFCsToHistory(rowNumbers) {
 }
 
 async function moveRowToHistory(rowNumber) {
-  const columnsToMove = NUM_COLS - 2; // A–T (exclude % FC and Ambiguous FC cols)
+  const columnsToMove = NUM_COLS - 1; // A–T (exclude % FC col)
 
   // Two reads: FORMULA for hyperlink formulas, FORMATTED_VALUE for dates/display text
   const [formulaRows, formattedRows] = await Promise.all([
@@ -887,7 +888,7 @@ async function main() {
   await initSheets();
 
   switch (cmd) {
-    case 'refresh':   await refreshAllBeatmaps(); break;
+    case 'refresh':   await refreshBeatmaps(parseInt(process.argv[3]) || null, parseInt(process.argv[4]) || null); break;
     case 'add-new':   await addNewRankedBeatmaps(); break;
     case 'move-fcs':  await moveFCsToHistory(); break;
     case 'sort':      await sortBeatmapData(); console.log('Sorted.'); break;
@@ -895,7 +896,7 @@ async function main() {
     default:
       console.log('Usage: node no-fc-tracker.js <command> [args]');
       console.log('Commands:');
-      console.log('  refresh                       Re-fetch all beatmaps and move FCs to History');
+      console.log('  refresh [startRow] [endRow]   Re-fetch beatmaps and move FCs to History');
       console.log('  add-new                       Fetch newly ranked beatmaps from the past day');
       console.log('  move-fcs                      Check for FCs and move/delete them');
       console.log('  sort                          Sort Data sheet by star rating');
