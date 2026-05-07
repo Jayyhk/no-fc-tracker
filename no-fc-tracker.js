@@ -1006,11 +1006,11 @@ async function main() {
     default:
       console.log('Usage: node no-fc-tracker.js <command> [args]');
       console.log('Commands:');
-      console.log('  refresh [startRow] [endRow]   Re-fetch beatmaps and move FCs to History');
-      console.log('  add-new                       Fetch newly ranked beatmaps from the past day');
-      console.log('  move-fcs                      Check for FCs and move/delete them');
-      console.log('  sort                          Sort Data sheet by star rating');
-      console.log('  backfill <since> <until>      Add ranked maps in date range (YYYY-MM-DD)');
+      console.log('  refresh [startRow] [endRow]  Re-fetch beatmaps and move FCs to History');
+      console.log('  add-new                      Fetch newly ranked beatmaps from the past day');
+      console.log('  move-fcs                     Check for FCs and move/delete them');
+      console.log('  sort                         Sort Data sheet by star rating');
+      console.log('  backfill <since> <until>     Add ranked maps in date range (YYYY-MM-DD)');
   }
 }
 

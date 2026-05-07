@@ -21,11 +21,11 @@ For **ambiguous scores** — where `combo + count_100 + count_50 >= max_combo` b
 ## Commands
 
 ```
-node no-fc-tracker.js refresh [startRow] [endRow]   Re-fetch beatmaps and move FCs to History
-node no-fc-tracker.js add-new                        Fetch newly ranked beatmaps from the past day
-node no-fc-tracker.js move-fcs                       Check for FCs and move/delete them
-node no-fc-tracker.js sort                           Sort Data sheet by star rating
-node no-fc-tracker.js backfill <since> <until>       Add ranked maps in date range (YYYY-MM-DD)
+node no-fc-tracker.js refresh [startRow] [endRow]  Re-fetch beatmaps and move FCs to History
+node no-fc-tracker.js add-new                      Fetch newly ranked beatmaps from the past day
+node no-fc-tracker.js move-fcs                     Check for FCs and move/delete them
+node no-fc-tracker.js sort                         Sort Data sheet by star rating
+node no-fc-tracker.js backfill <since> <until>     Add ranked maps in date range (YYYY-MM-DD)
 ```
 
 ## Setup
