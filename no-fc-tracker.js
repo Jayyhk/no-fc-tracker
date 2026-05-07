@@ -2,6 +2,7 @@
 import { google } from 'googleapis';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { createInterface } from 'readline/promises';
 import { spawn } from 'child_process';
@@ -17,6 +18,14 @@ const RATE_LIMIT_DELAY = 1000;
 const CREDENTIALS_PATH = path.join(__dirname, 'credentials.json');
 const TOKEN_PATH = path.join(__dirname, 'token.json');
 
+const SHEETS_REQUESTS_PER_MIN = 55;
+const SHEETS_MAX_RETRIES = 6;
+const SHEETS_RETRY_BASE_MS = 2000;
+const REPLAY_REQUESTS_PER_MIN = 10;
+const DANSER_TIMEOUT_MS = 300000;
+const SHEETS_BATCH_CHUNK = 200;
+const SHEETS_FORMAT_CHUNK = 1000;
+
 const INPUT_COL = 22;  // Column V
 const OUTPUT_COL = 1;  // Column A
 const OUTPUT_ROW = 2;  // First data row (row 1 is header)
@@ -25,6 +34,8 @@ const NUM_COLS = 21;   // Columns A–U
 const VALID_MODS = { 0:'NM',1:'NF',2:'EZ',4:'TD',8:'HD',16:'HR',32:'SD',64:'DT',256:'HT',512:'NC',1024:'FL',4096:'SO',16384:'PF' };
 const INVALID_MODS = 2 | 4 | 256 | 4096; // EZ | TD | HT | SO
 const RANK_VALUE_MAP = new Map([['D',1],['C',2],['B',3],['A',4],['S',5],['SH',5],['X',6],['XH',6]]);
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ── Google Auth ───────────────────────────────────────────────────────────────
 
@@ -70,8 +81,6 @@ async function initSheets() {
 
 // ── Sheet Helpers ─────────────────────────────────────────────────────────────
 
-// Sheets API quota: 60 read req/min and 60 write req/min per user. Stay under that proactively.
-const SHEETS_LIMIT = 55;
 const sheetsReadTimes = [];
 const sheetsWriteTimes = [];
 
@@ -80,7 +89,7 @@ async function waitForSheetsSlot(kind) {
   while (true) {
     const now = Date.now();
     while (arr.length > 0 && now - arr[0] >= 60000) arr.shift();
-    if (arr.length < SHEETS_LIMIT) {
+    if (arr.length < SHEETS_REQUESTS_PER_MIN) {
       arr.push(now);
       return;
     }
@@ -89,15 +98,14 @@ async function waitForSheetsSlot(kind) {
   }
 }
 
-// Wraps a Sheets API call with proactive rate limiting + 429 retry
 async function withSheetsRetry(kind, fn, attempt = 1) {
   await waitForSheetsSlot(kind);
   try {
     return await fn();
   } catch (err) {
     const code = err?.code || err?.response?.status;
-    if (code === 429 && attempt <= 6) {
-      const waitMs = Math.min(60000, 2000 * 2 ** (attempt - 1));
+    if (code === 429 && attempt <= SHEETS_MAX_RETRIES) {
+      const waitMs = Math.min(60000, SHEETS_RETRY_BASE_MS * 2 ** (attempt - 1));
       console.log(`Sheets API 429 (${kind}), retrying in ${waitMs / 1000}s... (attempt ${attempt})`);
       await new Promise(r => setTimeout(r, waitMs));
       return withSheetsRetry(kind, fn, attempt + 1);
@@ -139,15 +147,14 @@ async function sheetSet(sheet, startRow, startCol, values) {
 
 async function sheetBatchSet(ranges) {
   // ranges: [{ sheet, startRow, startCol, values }]
-  const CHUNK = 200;
   const data = ranges.map(r => ({
     range: `${r.sheet}!${colLetter(r.startCol)}${r.startRow}`,
     values: r.values,
   }));
-  for (let i = 0; i < data.length; i += CHUNK) {
+  for (let i = 0; i < data.length; i += SHEETS_BATCH_CHUNK) {
     await withSheetsRetry('write', () => sheetsClient.spreadsheets.values.batchUpdate({
       spreadsheetId: SPREADSHEET_ID,
-      requestBody: { valueInputOption: 'USER_ENTERED', data: data.slice(i, i + CHUNK) },
+      requestBody: { valueInputOption: 'USER_ENTERED', data: data.slice(i, i + SHEETS_BATCH_CHUNK) },
     }));
   }
 }
@@ -263,32 +270,25 @@ async function applyBulkFormatting(rowNumbers) {
     }
   }
 
-  const CHUNK = 1000;
-  for (let i = 0; i < requests.length; i += CHUNK) {
+  for (let i = 0; i < requests.length; i += SHEETS_FORMAT_CHUNK) {
     await withSheetsRetry('write', () => sheetsClient.spreadsheets.batchUpdate({
       spreadsheetId: SPREADSHEET_ID,
-      requestBody: { requests: requests.slice(i, i + CHUNK) },
+      requestBody: { requests: requests.slice(i, i + SHEETS_FORMAT_CHUNK) },
     }));
   }
 }
 
-// ── Sleep ─────────────────────────────────────────────────────────────────────
+// ── Danser FC Verification ────────────────────────────────────────────────────
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-// ── Replay Verification (circleguard) ────────────────────────────────────────
-
-const PYTHON_PATH = path.join(__dirname, '.venv/bin/python');
-const FC_CHECK_PATH = path.join(__dirname, 'fc_check.py');
-const REPLAY_RATE_LIMIT = 10; // get_replay: 10 requests per minute
+const DANSER_DIR  = path.join(__dirname, 'danser');
+const SONGS_DIR   = path.join(DANSER_DIR, 'songs', 'maps');
+const REPLAYS_DIR = path.join(DANSER_DIR, 'replays');
 const replayRequestTimes = [];
 
 async function waitForReplaySlot() {
   const now = Date.now();
-  while (replayRequestTimes.length > 0 && now - replayRequestTimes[0] >= 60000) {
-    replayRequestTimes.shift();
-  }
-  if (replayRequestTimes.length >= REPLAY_RATE_LIMIT) {
+  while (replayRequestTimes.length > 0 && now - replayRequestTimes[0] >= 60000) replayRequestTimes.shift();
+  if (replayRequestTimes.length >= REPLAY_REQUESTS_PER_MIN) {
     const waitMs = 60000 - (Date.now() - replayRequestTimes[0]) + 500;
     console.log(`Replay rate limit hit, waiting ${Math.ceil(waitMs / 1000)}s...`);
     await sleep(waitMs);
@@ -296,28 +296,120 @@ async function waitForReplaySlot() {
   }
 }
 
-async function checkAmbiguousFC(beatmapID, userID, mods) {
-  await waitForReplaySlot();
-  replayRequestTimes.push(Date.now());
+function writeOsrString(parts, str) {
+  if (!str) { parts.push(Buffer.from([0x00])); return; }
+  const strBuf = Buffer.from(str, 'utf8');
+  parts.push(Buffer.from([0x0b]));
+  let len = strBuf.length;
+  const lenBytes = [];
+  do {
+    let byte = len & 0x7f;
+    len >>>= 7;
+    if (len !== 0) byte |= 0x80;
+    lenBytes.push(byte);
+  } while (len !== 0);
+  parts.push(Buffer.from(lenBytes));
+  parts.push(strBuf);
+}
 
+function buildOsr(score, beatmapMd5, replayData) {
+  const parts = [];
+  const u1  = v => { const b = Buffer.allocUnsafe(1); b.writeUInt8(v);       parts.push(b); };
+  const u2  = v => { const b = Buffer.allocUnsafe(2); b.writeUInt16LE(v);    parts.push(b); };
+  const i4  = v => { const b = Buffer.allocUnsafe(4); b.writeInt32LE(v);     parts.push(b); };
+  const i8  = v => { const b = Buffer.allocUnsafe(8); b.writeBigInt64LE(v);  parts.push(b); };
+
+  u1(0); // game mode: osu!standard
+  i4(20241212); // game version
+  writeOsrString(parts, beatmapMd5);
+  writeOsrString(parts, score.username || '');
+  writeOsrString(parts, ''); // replay hash
+  u2(parseInt(score.count300));
+  u2(parseInt(score.count100));
+  u2(parseInt(score.count50));
+  u2(parseInt(score.countgeki));
+  u2(parseInt(score.countkatu));
+  u2(parseInt(score.countmiss));
+  i4(parseInt(score.score));
+  u2(parseInt(score.maxcombo));
+  u1(score.perfect === '1' ? 1 : 0);
+  i4(parseInt(score.enabled_mods));
+  writeOsrString(parts, ''); // life bar graph
+
+  // Windows FILETIME: 100-ns intervals since 1601-01-01
+  const ms = BigInt(new Date(score.date.replace(' ', 'T') + 'Z').getTime());
+  i8(ms * 10000n + 116444736000000000n);
+
+  i4(replayData.length);
+  parts.push(replayData);
+  i8(BigInt(parseInt(score.score_id) || 0));
+
+  return Buffer.concat(parts);
+}
+
+async function runDanser(beatmapID, replayPath) {
   return new Promise((resolve) => {
-    const proc = spawn(PYTHON_PATH, [FC_CHECK_PATH, String(beatmapID), String(userID), String(mods)], {
-      env: { ...process.env, OSU_API_KEY },
-    });
+    const sPatch = JSON.stringify({ Recording: { FPS: 1, libx264: { Preset: 'ultrafast' } } });
+    const proc = spawn(
+      path.join(DANSER_DIR, 'danser-cli'),
+      ['-id', String(beatmapID), '-knockout2', JSON.stringify([replayPath]),
+       '-record', '-out', '/tmp/_fc_check.mp4', '-quickstart', '-sPatch', sPatch],
+      { cwd: DANSER_DIR, env: { ...process.env, DISPLAY: process.env.DISPLAY || ':0' } }
+    );
     let stdout = '';
-    let stderr = '';
-    const timeout = setTimeout(() => {
-      proc.kill();
-      resolve({ error: 'fc_check timed out after 60s' });
-    }, 60000);
+    const timeout = setTimeout(() => { proc.kill(); resolve({ error: 'danser timeout' }); }, DANSER_TIMEOUT_MS);
     proc.stdout.on('data', d => stdout += d);
-    proc.stderr.on('data', d => stderr += d);
     proc.on('close', () => {
       clearTimeout(timeout);
-      try { resolve(JSON.parse(stdout)); }
-      catch { resolve({ error: `parse error: ${stdout || stderr}` }); }
+      const pattern = /\|\s*1\s*\|.*?\|\s*[\d,]+\s*\|\s*[\d.]+\s*\|\s*\w+\s*\|\s*[\d,]+\s*\|\s*[\d,]+\s*\|\s*[\d,]+\s*\|\s*[\d,]+\s*\|\s*([\d,]+)\s*\|\s*([\d,]+)\s*\|/;
+      for (const line of stdout.split('\n')) {
+        const m = pattern.exec(line);
+        if (m) {
+          const currentCombo = parseInt(m[1].replace(/,/g, ''));
+          const maxCombo     = parseInt(m[2].replace(/,/g, ''));
+          resolve({ is_fc: currentCombo === maxCombo, current_combo: currentCombo, max_combo: maxCombo });
+          return;
+        }
+      }
+      resolve({ error: 'could not parse danser output', stdout_tail: stdout.slice(-500) });
     });
   });
+}
+
+async function checkAmbiguousFC(beatmapID, userID, mods, score) {
+  await waitForReplaySlot();
+  replayRequestTimes.push(Date.now());
+  try {
+    fs.mkdirSync(SONGS_DIR, { recursive: true });
+
+    // 1. Beatmap
+    const beatmapPath = path.join(SONGS_DIR, `${beatmapID}.osu`);
+    if (!fs.existsSync(beatmapPath)) {
+      const res = await fetch(`https://osu.ppy.sh/osu/${beatmapID}`);
+      if (!res.ok) throw new Error(`beatmap download failed: HTTP ${res.status}`);
+      fs.writeFileSync(beatmapPath, Buffer.from(await res.arrayBuffer()));
+    }
+    const beatmapMd5 = crypto.createHash('md5').update(fs.readFileSync(beatmapPath)).digest('hex');
+
+    // 2. Replay — store in danser's own replays/{md5}/ directory
+    const replayDir  = path.join(REPLAYS_DIR, beatmapMd5);
+    const replayPath = path.join(replayDir, `${beatmapID}_${userID}_${mods}.osr`);
+    if (!fs.existsSync(replayPath)) {
+      fs.mkdirSync(replayDir, { recursive: true });
+      if (score.replay_available === '0') throw new Error('replay not available');
+      const res = await fetch(`https://osu.ppy.sh/api/get_replay?k=${OSU_API_KEY}&m=0&b=${beatmapID}&u=${userID}&mods=${mods}`);
+      if (!res.ok) throw new Error(`replay download failed: HTTP ${res.status}`);
+      const json = await res.json();
+      if (json.error) throw new Error(`replay API: ${json.error}`);
+      const replayData = Buffer.from(json.content, 'base64');
+      fs.writeFileSync(replayPath, buildOsr(score, beatmapMd5, replayData));
+    }
+
+    // 3. Run danser
+    return await runDanser(beatmapID, replayPath);
+  } catch (err) {
+    return { error: err.message };
+  }
 }
 
 // ── osu! API ──────────────────────────────────────────────────────────────────
@@ -414,11 +506,9 @@ function isAmbiguousFC(score, maxCombo) {
   return parseInt(score.maxcombo) + parseInt(score.count100) >= maxCombo;
 }
 
-// Returns the best score for the beatmap with authoritative `isFC` boolean.
-// If a score passes the heuristic isFC, returns it as FC immediately.
-// If no heuristic FC but best is isAmbiguousFC AND beatmapID is provided, runs danser verification.
 async function findBestScore(scores, maxCombo, beatmapID = null) {
   let best = { userID: 0, player: '', modString: '', currentMaxCombo: 0, rank: '', scoreDate: '', percentFC: 0, isFC: false, isAmbiguousFC: false };
+  let rawBest = null;
   const limit = Math.min(scores.length, 50);
 
   for (let i = 0; i < limit; i++) {
@@ -453,12 +543,13 @@ async function findBestScore(scores, maxCombo, beatmapID = null) {
         isFC: false,
         isAmbiguousFC: isAmbiguousFC(score, maxCombo),
       };
+      rawBest = score;
     }
   }
 
   // Verify isAmbiguousFC best score via danser if we have a beatmapID
-  if (beatmapID && best.isAmbiguousFC && best.userID) {
-    const result = await checkAmbiguousFC(beatmapID, best.userID, getModEnum(best.modString));
+  if (beatmapID && best.isAmbiguousFC && best.userID && rawBest) {
+    const result = await checkAmbiguousFC(beatmapID, best.userID, getModEnum(best.modString), rawBest);
     if (result.is_fc) {
       console.log(`Verified FC: beatmap ${beatmapID} (${best.player})`);
       return { ...best, isFC: true, isAmbiguousFC: false };
@@ -572,10 +663,8 @@ async function updateLastUpdatedTimestamp() {
   }
 }
 
-// ── processRefreshJobs ────────────────────────────────────────────────────────
+// ── Main Functions ────────────────────────────────────────────────────────────
 
-// For refresh only: fetches beatmap data + scores per job, builds rows, bulk writes.
-// add-new/backfill build rows inline and call setBulkRowData/setBulkInputURLs directly.
 async function processRefreshJobs(jobs) {
   const allRowData = [];
   const rowNumbers = [];
@@ -611,8 +700,6 @@ async function processRefreshJobs(jobs) {
 
   if (allRowData.length > 0) await setBulkRowData(rowNumbers, allRowData);
 }
-
-// ── Main Functions ────────────────────────────────────────────────────────────
 
 async function backfill(sinceDate, untilDate) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(sinceDate) || !/^\d{4}-\d{2}-\d{2}$/.test(untilDate)) {
