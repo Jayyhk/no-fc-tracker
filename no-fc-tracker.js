@@ -464,6 +464,7 @@ async function findBestScore(scores, maxCombo, beatmapID = null) {
       return { ...best, isFC: true, isAmbiguousFC: false };
     }
     if (result.error) console.error(`Replay check failed for ${beatmapID}/${best.userID}: ${result.error}${result.stdout_tail ? '\n' + result.stdout_tail : ''}`);
+    else console.log(`Not FC: beatmap ${beatmapID} (${best.player})`);
   }
 
   return best;
@@ -559,12 +560,16 @@ async function updateLastUpdatedTimestamp() {
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
   const stamp = `${yesterday.getMonth() + 1}/${yesterday.getDate()}/${yesterday.getFullYear()}`;
-  await withSheetsRetry('write', () => sheetsClient.spreadsheets.values.update({
-    spreadsheetId: SPREADSHEET_ID,
-    range: 'About!B23:G24',
-    valueInputOption: 'USER_ENTERED',
-    requestBody: { values: [[`Last Updated: ${stamp}`]] },
-  }));
+  try {
+    await withSheetsRetry('write', () => sheetsClient.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: 'About!B18:G19',
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [[`Last Updated: ${stamp}`]] },
+    }));
+  } catch (err) {
+    console.warn('Could not update timestamp on About sheet:', err.errors?.[0]?.message || err.message);
+  }
 }
 
 // ── processRefreshJobs ────────────────────────────────────────────────────────
