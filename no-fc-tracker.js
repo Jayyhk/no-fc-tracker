@@ -831,7 +831,7 @@ async function moveFCsToHistory(rowNumbers) {
   if (moved > 0) await sortHistory();
 
   if (moved || deleted) {
-    console.log(`Moved ${moved} FC(s) to History. Deleted ${deleted} recent FC(s).`);
+    console.log(`Found ${moved + deleted} FC(s): moved ${moved} to History, deleted ${deleted} recent.`);
   }
 }
 
