@@ -736,42 +736,6 @@ async function addBeatmapsToSheet(newBeatmaps) {
   for (const b of skipped) console.log(`  - https://osu.ppy.sh/beatmapsets/${b.beatmapset_id}#osu/${b.beatmap_id}`);
 }
 
-async function processRefreshJobs(jobs) {
-  const allRowData = [];
-  const rowNumbers = [];
-  const beatmapBase = `https://osu.ppy.sh/api/get_beatmaps?k=${OSU_API_KEY}&b=`;
-  const scoresBase  = `https://osu.ppy.sh/api/get_scores?k=${OSU_API_KEY}&b=`;
-
-  for (const job of jobs) {
-    let beatmapData;
-    try {
-      beatmapData = JSON.parse(await requestContent(beatmapBase + job.id))[0];
-    } catch (err) {
-      allRowData.push(createErrorRow('API Error: ' + err.message));
-      rowNumbers.push(job.row);
-      continue;
-    }
-    if (!beatmapData) {
-      allRowData.push(createErrorRow('Invalid beatmap ID'));
-      rowNumbers.push(job.row);
-      continue;
-    }
-
-    let scores = [];
-    try {
-      scores = JSON.parse(await requestContent(scoresBase + job.id)) || [];
-    } catch {
-      console.error('Could not fetch scores for beatmap', job.id);
-    }
-
-    const rowData = await createBeatmapRow(beatmapData, scores);
-    allRowData.push(rowData);
-    rowNumbers.push(job.row);
-  }
-
-  if (allRowData.length > 0) await setBulkRowData(rowNumbers, allRowData);
-}
-
 async function backfill(sinceDate, untilDate) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(sinceDate) || !/^\d{4}-\d{2}-\d{2}$/.test(untilDate)) {
     console.error('Dates must be in YYYY-MM-DD format.');
@@ -824,7 +788,40 @@ async function refreshBeatmaps(fromRow, toRow) {
 
   const rangeLabel = (fromRow || toRow) ? ` (rows ${start}–${end})` : '';
   console.log(`Processing ${jobs.length} beatmaps${rangeLabel} (this will take ~${Math.round(jobs.length * 2 / 60)} minutes)...`);
-  await processRefreshJobs(jobs);
+
+  const allRowData = [];
+  const rowNumbers = [];
+  const beatmapBase = `https://osu.ppy.sh/api/get_beatmaps?k=${OSU_API_KEY}&b=`;
+  const scoresBase  = `https://osu.ppy.sh/api/get_scores?k=${OSU_API_KEY}&b=`;
+
+  for (const job of jobs) {
+    let beatmapData;
+    try {
+      beatmapData = JSON.parse(await requestContent(beatmapBase + job.id))[0];
+    } catch (err) {
+      allRowData.push(createErrorRow('API Error: ' + err.message));
+      rowNumbers.push(job.row);
+      continue;
+    }
+    if (!beatmapData) {
+      allRowData.push(createErrorRow('Invalid beatmap ID'));
+      rowNumbers.push(job.row);
+      continue;
+    }
+
+    let scores = [];
+    try {
+      scores = JSON.parse(await requestContent(scoresBase + job.id)) || [];
+    } catch {
+      console.error('Could not fetch scores for beatmap', job.id);
+    }
+
+    allRowData.push(await createBeatmapRow(beatmapData, scores));
+    rowNumbers.push(job.row);
+  }
+
+  if (allRowData.length > 0) await setBulkRowData(rowNumbers, allRowData);
+
   await moveFCsToHistory();
   await updateLastUpdatedTimestamp();
   console.log(`Done! Processed ${jobs.length} beatmaps.`);
@@ -972,7 +969,12 @@ async function main() {
     case 'refresh':   await refreshBeatmaps(parseInt(process.argv[3]) || null, parseInt(process.argv[4]) || null); break;
     case 'add-new':   await addNewRankedBeatmaps(); break;
     case 'move-fcs':  await moveFCsToHistory(); break;
-    case 'move-to-history': await moveRowToHistory(parseInt(process.argv[3])); break;
+    case 'move-to-history': {
+      const row = parseInt(process.argv[3]);
+      if (!row || isNaN(row)) { console.error('Usage: move-to-history <row>'); process.exit(1); }
+      await moveRowToHistory(row);
+      break;
+    }
     case 'sort':      await sortBeatmapData(); console.log('Sorted.'); break;
     case 'backfill':  await backfill(process.argv[3], process.argv[4]); break;
     default:
