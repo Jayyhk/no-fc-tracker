@@ -1,6 +1,5 @@
+danser/
 node_modules/
-.venv/
 .env
 credentials.json
 token.json
-danser/

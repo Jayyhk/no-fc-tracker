@@ -26,10 +26,32 @@ const DANSER_TIMEOUT_MS = 300000;
 const SHEETS_BATCH_CHUNK = 200;
 const SHEETS_FORMAT_CHUNK = 1000;
 
-const INPUT_COL = 22;  // Column V
-const OUTPUT_COL = 1;  // Column A
+const OUTPUT_COL = 1;
 const OUTPUT_ROW = 2;  // First data row (row 1 is header)
-const NUM_COLS = 21;   // Columns A–U
+const COL = {
+  IMAGE:         1,  // A
+  BEATMAP:       2,  // B
+  SR:            3,  // C
+  LENGTH:        4,  // D
+  BPM:           5,  // E
+  CS:            6,  // F
+  AR:            7,  // G
+  OD:            8,  // H
+  HP:            9,  // I
+  CREATOR:      10,  // J
+  BEATMAP_ID:   11,  // K
+  BEATMAPSET_ID:12,  // L
+  RANKED_DATE:  13,  // M
+  DAYS_RANKED:  14,  // N
+  PLAYER:       15,  // O
+  SCORE_DATE:   16,  // P
+  RANK:         17,  // Q
+  MODS:         18,  // R
+  COMBO:        19,  // S
+  MAX_COMBO:    20,  // T
+  PCT_FC:       21,  // U
+};
+const NUM_COLS = Object.keys(COL).length;
 
 const VALID_MODS = { 0:'NM',1:'NF',2:'EZ',4:'TD',8:'HD',16:'HR',32:'SD',64:'DT',256:'HT',512:'NC',1024:'FL',4096:'SO',16384:'PF' };
 const INVALID_MODS = 2 | 4 | 256 | 4096; // EZ | TD | HT | SO
@@ -160,7 +182,7 @@ async function sheetBatchSet(ranges) {
 }
 
 async function sheetLastRow(sheet) {
-  const colMap = { Data: 'V', History: 'K', About: 'A' };
+  const colMap = { Data: colLetter(COL.BEATMAP_ID), History: colLetter(COL.BEATMAP_ID), About: 'A' };
   const col = colMap[sheet] || 'A';
   const res = await withSheetsRetry('read', () => sheetsClient.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
@@ -234,14 +256,14 @@ async function applyBulkFormatting(rowNumbers) {
 
   // col is 1-based
   const numberFormats = [
-    { col: 3,  pattern: '0.00' },  // C - SR
-    { col: 4,  type: 'TEXT' },     // D - Length (force text so "4:10" doesn't become a time)
-    { col: 5,  clear: true },       // E - BPM
-    { col: 6,  clear: true },       // F - CS
-    { col: 7,  clear: true },       // G - AR
-    { col: 8,  clear: true },       // H - OD
-    { col: 9,  clear: true },       // I - HP
-    { col: 21, pattern: '0.00' },  // U - % FC
+    { col: COL.SR,     pattern: '0.00' },
+    { col: COL.LENGTH, type: 'TEXT' },     // force text so "4:10" doesn't become a time
+    { col: COL.BPM,    clear: true },
+    { col: COL.CS,     clear: true },
+    { col: COL.AR,     clear: true },
+    { col: COL.OD,     clear: true },
+    { col: COL.HP,     clear: true },
+    { col: COL.PCT_FC, pattern: '0.00' },
   ];
 
   const requests = [];
@@ -513,8 +535,10 @@ function isAmbiguousFC(score, maxCombo) {
   return parseInt(score.maxcombo) + parseInt(score.count100) + parseInt(score.count50) >= maxCombo;
 }
 
+// ── Row Building ──────────────────────────────────────────────────────────────
+
 async function findBestScore(scores, maxCombo, beatmapID = null) {
-  let best = { userID: 0, player: '', modString: '', currentMaxCombo: 0, rank: '', scoreDate: '', percentFC: 0, isFC: false, isAmbiguousFC: false };
+  let best = { userID: 0, player: '', modString: '', currentMaxCombo: 0, rank: '', scoreDate: '', percentFC: 0, isFC: false };
   const ambiguous = [];
   const limit = Math.min(scores.length, 50);
 
@@ -533,7 +557,6 @@ async function findBestScore(scores, maxCombo, beatmapID = null) {
         scoreDate: score.date ? formatDate(score.date) : '',
         percentFC: (parseInt(score.maxcombo) / maxCombo) * 100,
         isFC: true,
-        isAmbiguousFC: false,
       };
     }
 
@@ -548,7 +571,6 @@ async function findBestScore(scores, maxCombo, beatmapID = null) {
         scoreDate: score.date ? formatDate(score.date) : '',
         percentFC: (combo / maxCombo) * 100,
         isFC: false,
-        isAmbiguousFC: isAmbiguousFC(score, maxCombo),
       };
     }
 
@@ -573,7 +595,6 @@ async function findBestScore(scores, maxCombo, beatmapID = null) {
           scoreDate: score.date ? formatDate(score.date) : '',
           percentFC: (combo / maxCombo) * 100,
           isFC: true,
-          isAmbiguousFC: false,
         };
       }
       if (result.error) console.error(`Replay check failed for ${beatmapID}/${score.user_id}: ${result.error}${result.stdout_tail ? '\n' + result.stdout_tail : ''}`);
@@ -600,9 +621,7 @@ function createPlayerHyperlink(userID, username) {
 async function createBeatmapRow(beatmapData, scores, best = null) {
   const maxCombo = parseInt(beatmapData.max_combo);
   if (!best) best = await findBestScore(scores, maxCombo, beatmapData.beatmap_id);
-  // If best is a verified FC (regular or via danser), reflect it in the row indicators
-  const showCombo  = best.isFC ? maxCombo : best.currentMaxCombo;
-  const showPctFC  = best.isFC ? 100 : best.percentFC;
+  const showPctFC = best.isFC ? 100 : best.percentFC;
   return [
     `=IMAGE("https://assets.ppy.sh/beatmaps/${beatmapData.beatmapset_id}/covers/cover.jpg", 2)`,
     createBeatmapNameHyperlink(beatmapData),
@@ -622,7 +641,7 @@ async function createBeatmapRow(beatmapData, scores, best = null) {
     best.scoreDate,
     best.rank,
     best.modString,
-    showCombo,
+    best.currentMaxCombo,
     maxCombo,
     showPctFC,
   ];
@@ -637,9 +656,9 @@ function createErrorRow(message) {
 async function getExistingBeatmapIds() {
   const lastRow = await sheetLastRow('Data');
   if (lastRow < OUTPUT_ROW) return [];
-  const rows = await sheetGet('Data', OUTPUT_ROW, INPUT_COL, lastRow - OUTPUT_ROW + 1, 1, 'FORMATTED_VALUE');
+  const rows = await sheetGet('Data', OUTPUT_ROW, COL.BEATMAP_ID, lastRow - OUTPUT_ROW + 1, 1, 'UNFORMATTED_VALUE');
   return rows
-    .map(row => String(row?.[0] || '').match(/\d+$/)?.[0] || '')
+    .map(row => String(row?.[0] || '').trim())
     .filter(id => id !== '');
 }
 
@@ -652,21 +671,14 @@ async function setBulkRowData(rowNumbers, allRowData) {
   await applyBulkFormatting(rowNumbers);
 }
 
-async function setBulkInputURLs(inputURLs) {
-  if (!inputURLs.length) return;
-  await sheetBatchSet(inputURLs.map(({ row, url }) => ({
-    sheet: 'Data', startRow: row, startCol: INPUT_COL, values: [[url]],
-  })));
-}
-
 async function sortBeatmapData() {
-  await sheetSort('Data', OUTPUT_ROW, INPUT_COL, [{ col: 3, asc: true }]); // col C = SR, sort through input URL col
+  await sheetSort('Data', OUTPUT_ROW, NUM_COLS, [{ col: COL.SR, asc: true }]);
 }
 
 async function sortHistory() {
   await sheetSort('History', 2, NUM_COLS - 1, [
-    { col: 16, asc: true }, // col P = score date
-    { col: 3,  asc: true }, // col C = star rating
+    { col: COL.SCORE_DATE, asc: true },
+    { col: COL.SR,         asc: true },
   ]);
 }
 
@@ -687,6 +699,42 @@ async function updateLastUpdatedTimestamp() {
 }
 
 // ── Main Functions ────────────────────────────────────────────────────────────
+
+async function addBeatmapsToSheet(newBeatmaps) {
+  console.log(`Checking ${newBeatmaps.length} new beatmap(s) for FCs...`);
+  const lastRow = await sheetLastRow('Data');
+  const nextRow = Math.max(lastRow + 1, OUTPUT_ROW);
+  const addedRows = [];
+  const added = [];
+  const skipped = [];
+
+  for (const beatmap of newBeatmaps) {
+    let scores = [];
+    try {
+      scores = JSON.parse(await fetchFromAPI(beatmap.beatmap_id, 'scores')) || [];
+    } catch { console.error('Could not fetch scores for', beatmap.beatmap_id); }
+
+    const best = await findBestScore(scores, parseInt(beatmap.max_combo), beatmap.beatmap_id);
+    if (best.isFC) {
+      skipped.push(beatmap);
+    } else {
+      const row = nextRow + addedRows.length;
+      const rowData = await createBeatmapRow(beatmap, scores, best);
+      addedRows.push({ row, rowData });
+      added.push(beatmap);
+    }
+  }
+
+  if (!added.length) { console.log('All beatmaps already have FCs.'); return; }
+
+  await setBulkRowData(addedRows.map(r => r.row), addedRows.map(r => r.rowData));
+  await sortBeatmapData();
+  await updateLastUpdatedTimestamp();
+
+  console.log(`\nAdded ${added.length} beatmap(s). Skipped ${skipped.length} with FCs.`);
+  for (const b of added)   console.log(`  + https://osu.ppy.sh/beatmapsets/${b.beatmapset_id}#osu/${b.beatmap_id}`);
+  for (const b of skipped) console.log(`  - https://osu.ppy.sh/beatmapsets/${b.beatmapset_id}#osu/${b.beatmap_id}`);
+}
 
 async function processRefreshJobs(jobs) {
   const allRowData = [];
@@ -756,41 +804,7 @@ async function backfill(sinceDate, untilDate) {
   const newBeatmaps = ranked.filter(b => !existingIds.includes(b.beatmap_id));
   if (!newBeatmaps.length) { console.log(`All ${label} beatmaps already in spreadsheet.`); return; }
 
-  console.log(`Checking ${newBeatmaps.length} new beatmap(s) for FCs...`);
-  const lastRow = await sheetLastRow('Data');
-  const nextRow = Math.max(lastRow + 1, OUTPUT_ROW);
-  const addedRows = [];
-  const added = [];
-  const skipped = [];
-
-  for (const beatmap of newBeatmaps) {
-    let scores = [];
-    try {
-      scores = JSON.parse(await fetchFromAPI(beatmap.beatmap_id, 'scores')) || [];
-    } catch { console.error('Could not fetch scores for', beatmap.beatmap_id); }
-
-    const best = await findBestScore(scores, parseInt(beatmap.max_combo), beatmap.beatmap_id);
-    if (best.isFC) {
-      skipped.push(beatmap);
-    } else {
-      const row = nextRow + addedRows.length;
-      const rowData = await createBeatmapRow(beatmap, scores, best);
-      const url = `https://osu.ppy.sh/beatmapsets/${beatmap.beatmapset_id}#osu/${beatmap.beatmap_id}`;
-      addedRows.push({ row, rowData, url });
-      added.push(beatmap);
-    }
-  }
-
-  if (!added.length) { console.log(`All ${label} beatmaps already have FCs.`); return; }
-
-  await setBulkRowData(addedRows.map(r => r.row), addedRows.map(r => r.rowData));
-  await setBulkInputURLs(addedRows.map(({ row, url }) => ({ row, url })));
-  await sortBeatmapData();
-  await updateLastUpdatedTimestamp();
-
-  console.log(`\nAdded ${added.length} beatmap(s). Skipped ${skipped.length} with FCs.`);
-  for (const b of added)   console.log(`  + https://osu.ppy.sh/beatmapsets/${b.beatmapset_id}#osu/${b.beatmap_id}`);
-  for (const b of skipped) console.log(`  - https://osu.ppy.sh/beatmapsets/${b.beatmapset_id}#osu/${b.beatmap_id}`);
+  await addBeatmapsToSheet(newBeatmaps);
 }
 
 async function refreshBeatmaps(fromRow, toRow) {
@@ -800,10 +814,10 @@ async function refreshBeatmaps(fromRow, toRow) {
   if (start > end) { console.log('No beatmaps to refresh.'); return; }
 
   const count = end - start + 1;
-  const urlRows = await sheetGet('Data', start, INPUT_COL, count, 1, 'FORMATTED_VALUE');
-  const jobs = urlRows
+  const idRows = await sheetGet('Data', start, COL.BEATMAP_ID, count, 1, 'UNFORMATTED_VALUE');
+  const jobs = idRows
     .map((row, i) => {
-      const id = String(row?.[0] || '').match(/\d+$/)?.[0] || '';
+      const id = String(row?.[0] || '').trim();
       return id ? { row: start + i, id } : null;
     })
     .filter(Boolean);
@@ -838,57 +852,15 @@ async function addNewRankedBeatmaps() {
   const newBeatmaps = ranked.filter(b => !existingIds.includes(b.beatmap_id));
   if (!newBeatmaps.length) { console.log('All new beatmaps already in spreadsheet.'); return; }
 
-  console.log(`Checking ${newBeatmaps.length} new beatmap(s) for FCs...`);
-  const lastRow = await sheetLastRow('Data');
-  const nextRow = Math.max(lastRow + 1, OUTPUT_ROW);
-  const addedRows = [];
-  const added = [];
-  const skipped = [];
-
-  for (const beatmap of newBeatmaps) {
-    let scores = [];
-    try {
-      scores = JSON.parse(await fetchFromAPI(beatmap.beatmap_id, 'scores')) || [];
-    } catch { console.error('Could not fetch scores for', beatmap.beatmap_id); }
-
-    const best = await findBestScore(scores, parseInt(beatmap.max_combo), beatmap.beatmap_id);
-    if (best.isFC) {
-      skipped.push(beatmap);
-    } else {
-      const row = nextRow + addedRows.length;
-      const rowData = await createBeatmapRow(beatmap, scores, best);
-      const url = `https://osu.ppy.sh/beatmapsets/${beatmap.beatmapset_id}#osu/${beatmap.beatmap_id}`;
-      addedRows.push({ row, rowData, url });
-      added.push(beatmap);
-    }
-  }
-
-  if (!added.length) { console.log('All new beatmaps already have FCs.'); return; }
-
-  await setBulkRowData(addedRows.map(r => r.row), addedRows.map(r => r.rowData));
-  await setBulkInputURLs(addedRows.map(({ row, url }) => ({ row, url })));
-  await sortBeatmapData();
-  await updateLastUpdatedTimestamp();
-
-  console.log(`\nAdded ${added.length} beatmap(s). Skipped ${skipped.length} with FCs.`);
-  for (const b of added)   console.log(`  + https://osu.ppy.sh/beatmapsets/${b.beatmapset_id}#osu/${b.beatmap_id}`);
-  for (const b of skipped) console.log(`  - https://osu.ppy.sh/beatmapsets/${b.beatmapset_id}#osu/${b.beatmap_id}`);
+  await addBeatmapsToSheet(newBeatmaps);
 }
 
-async function moveFCsToHistory(rowNumbers) {
-  // If rowNumbers is given, only check those specific rows. Otherwise scan all.
-  let startRow, allData;
-  if (rowNumbers && rowNumbers.length) {
-    startRow = Math.min(...rowNumbers);
-    const endRow = Math.max(...rowNumbers);
-    allData = await sheetGet('Data', startRow, OUTPUT_COL, endRow - startRow + 1, NUM_COLS, 'FORMATTED_VALUE');
-  } else {
-    const lastRow = await sheetLastRow('Data');
-    const rowCount = lastRow - OUTPUT_ROW + 1;
-    if (rowCount <= 0) return;
-    startRow = OUTPUT_ROW;
-    allData = await sheetGet('Data', OUTPUT_ROW, OUTPUT_COL, rowCount, NUM_COLS, 'FORMATTED_VALUE');
-  }
+async function moveFCsToHistory() {
+  const lastRow = await sheetLastRow('Data');
+  const rowCount = lastRow - OUTPUT_ROW + 1;
+  if (rowCount <= 0) return;
+  const startRow = OUTPUT_ROW;
+  const allData = await sheetGet('Data', OUTPUT_ROW, OUTPUT_COL, rowCount, NUM_COLS, 'FORMATTED_VALUE');
   const toMove = [];
   const toDelete = [];
 
@@ -896,19 +868,13 @@ async function moveFCsToHistory(rowNumbers) {
     const row = allData[i] || [];
     if (row.every(c => c === '' || c == null)) continue;
 
-    const rankedDate      = row[12];                 // col M
-    const scoreDate       = row[15];                 // col P
-    const rank            = row[16];                 // col Q
-    const modString       = row[17] || '';           // col R
-    const currentMaxCombo = parseInt(row[18]);       // col S
-    const maxCombo        = parseInt(row[19]);       // col T
+    const rankedDate = row[COL.RANKED_DATE - 1];
+    const scoreDate  = row[COL.SCORE_DATE - 1];
+    const pctFC      = parseFloat(row[COL.PCT_FC - 1]);
 
-    if (isNaN(currentMaxCombo) || isNaN(maxCombo)) continue;
+    if (pctFC !== 100) continue;
 
-    const score = { rank, maxcombo: currentMaxCombo, enabled_mods: getModEnum(modString) };
-    if (!isFCByCombo(score, maxCombo)) continue;
-
-    const entry = { row: startRow + i, beatmapsetID: row[11], beatmapID: row[10] };
+    const entry = { row: startRow + i, beatmapsetID: row[COL.BEATMAPSET_ID - 1], beatmapID: row[COL.BEATMAP_ID - 1] };
 
     const hasScoreDate = scoreDate && scoreDate !== '' && !isNaN(new Date(scoreDate).getTime());
     const daysToFC = hasScoreDate ? calculateDaysToFC(rankedDate, scoreDate) : Infinity;
@@ -961,9 +927,9 @@ async function moveRowToHistory(rowNumber) {
     typeof val === 'string' && val.startsWith('=') ? val : (formattedRow[i] ?? '')
   );
 
-  const rankedDate = dataToMove[12]; // col M
-  const scoreDate  = dataToMove[15]; // col P
-  dataToMove[13]   = calculateDaysToFC(rankedDate, scoreDate); // col N → days to FC
+  const rankedDate = dataToMove[COL.RANKED_DATE - 1];
+  const scoreDate  = dataToMove[COL.SCORE_DATE - 1];
+  dataToMove[COL.DAYS_RANKED - 1] = calculateDaysToFC(rankedDate, scoreDate); // col N → days to FC
 
   const historyLastRow = await sheetLastRow('History');
   const targetRow = historyLastRow + 1;
@@ -1006,6 +972,7 @@ async function main() {
     case 'refresh':   await refreshBeatmaps(parseInt(process.argv[3]) || null, parseInt(process.argv[4]) || null); break;
     case 'add-new':   await addNewRankedBeatmaps(); break;
     case 'move-fcs':  await moveFCsToHistory(); break;
+    case 'move-to-history': await moveRowToHistory(parseInt(process.argv[3])); break;
     case 'sort':      await sortBeatmapData(); console.log('Sorted.'); break;
     case 'backfill':  await backfill(process.argv[3], process.argv[4]); break;
     default:
@@ -1014,6 +981,7 @@ async function main() {
       console.log('  refresh [startRow] [endRow]  Re-fetch beatmaps and move FCs to History');
       console.log('  add-new                      Fetch newly ranked beatmaps from the past day');
       console.log('  move-fcs                     Check for FCs and move/delete them');
+      console.log('  move-to-history <row>        Move a specific row to History');
       console.log('  sort                         Sort Data sheet by star rating');
       console.log('  backfill <since> <until>     Add ranked maps in date range (YYYY-MM-DD)');
   }
